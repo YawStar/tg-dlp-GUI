@@ -70,7 +70,10 @@ func (p *winPTY) Close() error {
 
 // runInTerminal opens a new console window running tg-dlp (login / accounts).
 func runInTerminal(exePath string, args []string) error {
-	cmd := exec.Command("cmd.exe", "/c", "start", "cmd.exe", "/k", buildCommandLine(exePath, args))
+	// "start /wait" blocks until the window is closed, so the caller knows when the
+	// task is finished; "pause & exit" keeps the result readable, then closes the window.
+	line := buildCommandLine(exePath, args) + " & echo. & pause & exit"
+	cmd := exec.Command("cmd.exe", "/c", "start", "/wait", "cmd.exe", "/k", line)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
