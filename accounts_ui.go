@@ -25,7 +25,7 @@ import (
 //   rename  tg-dlp rename <profile> <new>
 //   remove  drives the interactive "tg-dlp accounts" menu inside a hidden pty
 //           ("-", <number>, "y"), so tg-dlp itself deletes the session
-//   add     opens a terminal for "tg-dlp login --qr --profile <name>" (QR code)
+//   add     see accounts_add.go (config-pw, config-cache, login --qr-url -> QR code in the GUI)
 // ============================================================
 
 type accountItem struct {
@@ -222,9 +222,9 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 
 	switchBtn := widget.NewButtonWithIcon("Switch to selected", theme.ConfirmIcon(), nil)
 	switchBtn.Importance = widget.HighImportance
-	addBtn := widget.NewButtonWithIcon("  Add account (QR login)", theme.ContentAddIcon(), nil)
+	addBtn := widget.NewButtonWithIcon(" Add account (QR login)", theme.ContentAddIcon(), nil)
 	renameBtn := widget.NewButtonWithIcon("Rename profile", theme.DocumentCreateIcon(), nil)
-	removeBtn := widget.NewButtonWithIcon("-  Remove", theme.ContentRemoveIcon(), nil)
+	removeBtn := widget.NewButtonWithIcon(" Remove", theme.ContentRemoveIcon(), nil)
 	removeBtn.Importance = widget.DangerImportance
 	refreshBtn := widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), nil)
 
@@ -431,78 +431,14 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 			}, w)
 	}
 
-	// ---- Add (QR login in a terminal window) ----
+	// ---- Add (form -> config-pw -> config-cache -> login --qr-url shown as QR) ----
 	addBtn.OnTapped = func() {
-		first := len(items) == 0
-		entry := widget.NewEntry()
-		if first {
-			entry.SetPlaceHolder("Profile name (optional, empty = default)")
-		} else {
-			entry.SetPlaceHolder("Profile name, e.g. work")
-		}
-		hint := widget.NewLabel("A terminal window opens with a QR code.\nIn Telegram: Settings > Devices > Link Desktop Device, then scan it.\nWhen the login is finished, close the terminal window.")
-		hint.Wrapping = fyne.TextWrapWord
-
-		d := dialog.NewForm(
-			"Add account",
-			"Open QR login", "Cancel",
-			[]*widget.FormItem{
-				widget.NewFormItem("Name", entry),
-				widget.NewFormItem("", hint),
-			},
-			func(ok bool) {
-				if !ok {
-					return
-				}
-				name := strings.ToLower(strings.TrimSpace(entry.Text))
-				switch {
-				case name == "" && !first:
-					dialog.ShowError(errors.New("Please enter a profile name."), w)
-					return
-				case name != "" && (name == "default" || !profileNameRe.MatchString(name)):
-					dialog.ShowError(errors.New("Invalid name: use letters, digits, '-' and '_' (max 32 characters). 'default' is reserved."), w)
-					return
-				case name != "" && profileExists(items, name):
-					dialog.ShowError(fmt.Errorf("An account named %q already exists.", name), w)
-					return
-				}
-
-				args := append([]string{}, proxyArgs()...)
-				args = append(args, "login", "--qr")
-				if name != "" {
-					args = append(args, "--profile", name)
-				}
-
-				busy = true
-				statusLbl.SetText("Waiting for the QR login... close the terminal window when it is finished.")
-				updateButtons()
-
-				runInteractiveInTerminal(w, args, func() {
-					go func() {
-						after, err := listAccounts()
-						added := err == nil && ((name == "" && len(after) > len(items)) || (name != "" && profileExists(after, name)))
-						switched := ""
-						if added && name != "" {
-							out, _ := runTgDlpHidden(20*time.Second, "switch", name)
-							switched = cleanCLIText(out)
-						}
-						fyne.Do(func() {
-							msg := "Account was not added."
-							if added {
-								msg = "Account added."
-								if switched != "" {
-									msg = switched
-								}
-							}
-							reload(name, msg)
-							if added && onChanged != nil {
-								onChanged()
-							}
-						})
-					}()
-				})
-			}, w)
-		d.Show()
+		showAddAccountDialog(w, items, proxyArgs, func(profile string, added bool, msg string) {
+			reload(profile, msg)
+			if added && onChanged != nil {
+				onChanged()
+			}
+		})
 	}
 
 	refreshBtn.OnTapped = func() {

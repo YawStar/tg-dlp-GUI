@@ -5,6 +5,8 @@ go 1.27.2
 require (
 	fyne.io/fyne/v2 v2.8.2
 	github.com/EgeBalci/conpty-go v0.0.0-20221202214232-be2a46483c6a
+	github.com/creack/pty v1.1.24
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 )
 
 require (
