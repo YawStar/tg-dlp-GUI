@@ -1,0 +1,236 @@
+name: Build Fyne Multi-Platform
+
+on:
+  push:
+    branches: ["main", "master"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    fail-fast: false
+
+    strategy:
+      matrix:
+        include:
+          - label: Linux_64-bit
+            os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            cgo: "1"
+            cc: gcc
+            bin_name: tg-dlp-gui-linux-amd64
+            artifact_name: linux-amd64
+            arch_32_setup: false
+
+          - label: Linux_x32-bit
+            os: ubuntu-latest
+            goos: linux
+            goarch: "386"
+            cgo: "1"
+            cc: i686-linux-gnu-gcc
+            bin_name: tg-dlp-gui-linux-386
+            artifact_name: linux-386
+            arch_32_setup: true
+
+          - label: Windows_64-bit
+            os: windows-latest
+            goos: windows
+            goarch: amd64
+            cgo: "1"
+            cc: x86_64-w64-mingw32-gcc
+            bin_name: tg-dlp-gui-windows-amd64.exe
+            artifact_name: windows-amd64
+            arch_32_setup: false
+
+          - label: Windows_32-bit
+            os: windows-latest
+            goos: windows
+            goarch: "386"
+            cgo: "1"
+            cc: i686-w64-mingw32-gcc
+            bin_name: tg-dlp-gui-windows-386.exe
+            artifact_name: windows-386
+            arch_32_setup: false
+
+          - label: macOS(Intel)
+            os: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            cgo: "1"
+            cc: clang
+            bin_name: tg-dlp-gui-darwin-amd64
+            artifact_name: darwin-amd64
+            arch_32_setup: false
+
+          - label: macOS(Apple Silicon)
+            os: macos-latest
+            goos: darwin
+            goarch: arm64
+            cgo: "1"
+            cc: clang
+            bin_name: tg-dlp-gui-darwin-arm64
+            artifact_name: darwin-arm64
+            arch_32_setup: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Linux X11 & OpenGL dependencies (64-bit)
+        if: runner.os == 'Linux' && matrix.arch_32_setup == false
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxxf86vm-dev \
+            pkg-config
+
+      - name: Install Linux 32-bit cross-compiler & X11/GL dev libraries
+        if: runner.os == 'Linux' && matrix.arch_32_setup == true
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-i686-linux-gnu \
+            g++-i686-linux-gnu \
+            pkg-config \
+            libgl1-mesa-dev:i386 \
+            libx11-dev:i386 \
+            libxrandr-dev:i386 \
+            libxinerama-dev:i386 \
+            libxcursor-dev:i386 \
+            libxi-dev:i386 \
+            libxxf86vm-dev:i386
+
+      - name: Verify Windows MinGW compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-Command ${{ matrix.cc }} -ErrorAction Stop
+
+      - name: Generate Windows icon resource (.syso)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          go install github.com/tc-hib/go-winres@latest
+          $winresBin = Join-Path (go env GOPATH) "bin"
+          $env:PATH = "$winresBin;$env:PATH"
+          go-winres simply --icon assets/app-icon.ico
+
+      - name: Build binary (Linux)
+        if: runner.os == 'Linux'
+        env:
+          CGO_ENABLED: ${{ matrix.cgo }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+        run: |
+          mkdir -p dist/linux-pkg
+          go build -trimpath -ldflags="-s -w" -o "dist/linux-pkg/${{ matrix.bin_name }}" .
+          cp assets/app-icon.png "dist/linux-pkg/app-icon.png"
+          cat << 'EOF' > "dist/linux-pkg/tg-dlp-gui.desktop"
+          [Desktop Entry]
+          Type=Application
+          Name=tg-dlp GUI
+          Exec=./tg-dlp-gui-linux-amd64
+          Icon=app-icon
+          Terminal=false
+          Categories=Utility;Network;
+          EOF
+
+      - name: Build binary & .app bundle (macOS)
+        if: runner.os == 'macOS'
+        env:
+          CGO_ENABLED: ${{ matrix.cgo }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+        run: |
+          mkdir -p "dist/${{ matrix.artifact_name }}/tg-dlp-gui.app/Contents/MacOS"
+          mkdir -p "dist/${{ matrix.artifact_name }}/tg-dlp-gui.app/Contents/Resources"
+          go build -trimpath -ldflags="-s -w" -o "dist/${{ matrix.artifact_name }}/tg-dlp-gui.app/Contents/MacOS/tg-dlp-gui" .
+
+          ICONSET_DIR="dist/${{ matrix.artifact_name }}/AppIcon.iconset"
+          mkdir -p "$ICONSET_DIR"
+          for sz in 16 32 128 256 512; do
+            sips -z "$sz" "$sz" assets/app-icon.png --out "$ICONSET_DIR/icon_${sz}x${sz}.png" >/dev/null
+            sz2=$((sz * 2))
+            sips -z "$sz2" "$sz2" assets/app-icon.png --out "$ICONSET_DIR/icon_${sz}x${sz}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$ICONSET_DIR" -o "dist/${{ matrix.artifact_name }}/tg-dlp-gui.app/Contents/Resources/AppIcon.icns"
+          rm -rf "$ICONSET_DIR"
+
+          cat << 'EOF' > "dist/${{ matrix.artifact_name }}/tg-dlp-gui.app/Contents/Info.plist"
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>tg-dlp-gui</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.yawstar.tgdlpgui</string>
+            <key>CFBundleName</key>
+            <string>tg-dlp GUI</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Build binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CGO_ENABLED: ${{ matrix.cgo }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          go build -trimpath -ldflags="-H=windowsgui -s -w" -o "dist/${{ matrix.bin_name }}" .
+
+      - name: Upload build artifact (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/linux-pkg/
+          if-no-files-found: error
+
+      - name: Upload build artifact (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}/tg-dlp-gui.app
+          if-no-files-found: error
+
+      - name: Upload build artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.bin_name }}
+          if-no-files-found: error
+          
