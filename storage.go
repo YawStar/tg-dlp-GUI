@@ -351,6 +351,8 @@ func redactArgs(args []string) []string {
 	maskNext := false
 	for i, a := range args {
 		switch {
+		case i == 1 && args[0] == "config-pw": // config-pw <password> [--profile name]
+			out[i] = "***"
 		case maskNext:
 			out[i] = "***"
 			maskNext = false
