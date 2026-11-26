@@ -133,3 +133,6 @@ end tell`
 	}
 	return errors.New("no supported terminal emulator found (tried gnome-terminal, konsole, xfce4-terminal, kitty, alacritty, x-terminal-emulator, xterm)")
 }
+
+// hideConsole is a no-op outside Windows.
+func hideConsole(cmd *exec.Cmd) {}

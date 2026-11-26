@@ -49,8 +49,18 @@ func (p *winPTY) Kill() {
 		}
 	}
 	kill := exec.Command("taskkill", args...)
-	kill.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	hideConsole(kill)
 	_ = kill.Run()
+}
+
+// hideConsole stops Windows from flashing a console window when a console
+// program (tg-dlp, taskkill) is started from this GUI app.
+func hideConsole(cmd *exec.Cmd) {
+	const createNoWindow = 0x08000000
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: createNoWindow,
+	}
 }
 
 func (p *winPTY) Close() error {

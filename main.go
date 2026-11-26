@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"io"
 	"image/color"
@@ -26,6 +27,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -103,6 +105,22 @@ const (
 	settingsSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings preview-icon"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>`
 
 	heartSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"/></svg>`
+
+	// ---- action button icons (Lucide), one per command ----
+	// (infoSVG above is the top-bar icon, so the Info command uses actInfoSVG)
+	actUploadSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>`
+
+	actExportSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-summary preview-icon"><path d="M15 4H7"/><path d="m18 16 3 3-3 3"/><path d="M3 4v13a2 2 0 0 0 2 2h16"/><path d="M7 14h7"/><path d="M7 9h12"/></svg>`
+
+	actBackupSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-refresh-ccw preview-icon"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>`
+
+	actRestoreSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-refresh-cw preview-icon"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>`
+
+	actInfoSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-message-square-exclamation-point preview-icon"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/><path d="M12 15h.01"/><path d="M12 7v4"/></svg>`
+
+	actDeleteSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash preview-icon"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`
+
+	actPurgeSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 22-1-4"/><path d="M19 14a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2h-3a1 1 0 0 1-1-1V4a2 2 0 0 0-4 0v5a1 1 0 0 1-1 1H6a2 2 0 0 0-2 2v1a1 1 0 0 0 1 1"/><path d="M19 14H5l-1.973 6.767A1 1 0 0 0 4 22h16a1 1 0 0 0 .973-1.233z"/><path d="m8 22 1-4"/></svg>`
 )
 
 type iconSet struct {
@@ -433,6 +451,7 @@ func checkWhoAmI(exePath string, proxyURL string, noProxy bool) (string, bool) {
 	args = append(args, "whoami")
 
 	cmd := exec.Command(exePath, args...)
+	hideConsole(cmd) // no flashing console window on Windows
 	output, err := cmd.CombinedOutput()
 	outStr := strings.TrimSpace(stripANSI(string(output)))
 	lowerOut := strings.ToLower(outStr)
@@ -471,7 +490,7 @@ func runCommandWithPopup(
 		exePath, err := resolveTgDlpPath()
 		if err != nil {
 			fyne.Do(func() {
-				dialog.ShowError(fmt.Errorf("tg-dlp not found:\n%v", err), w)
+				showTgDlpNotFoundDialog(w)
 			})
 			return
 		}
@@ -486,6 +505,7 @@ func runCommandWithPopup(
 		fullArgs = append(fullArgs, args...)
 
 		cmd := exec.Command(exePath, fullArgs...)
+		hideConsole(cmd)
 		output, err := cmd.CombinedOutput()
 		outStr := strings.TrimSpace(stripANSI(string(output)))
 
@@ -655,7 +675,7 @@ func runInteractiveInTerminal(
 		exePath, err := resolveTgDlpPath()
 		if err != nil {
 			fyne.Do(func() {
-				dialog.ShowError(fmt.Errorf("tg-dlp not found:\n%v", err), w)
+				showTgDlpNotFoundDialog(w)
 				if onFinished != nil {
 					onFinished()
 				}
@@ -686,13 +706,72 @@ func runInteractiveInTerminal(
 var appIconBytes []byte
 
 // ============================================================
+// "tg-dlp not found" dialog (download link + Windows install command)
+// ============================================================
+
+const (
+	tgDlpReleasesURL = "https://github.com/YawStar/tg-dlp/releases/latest"
+	tgDlpInstallPS   = "irm https://raw.githubusercontent.com/YawStar/tg-dlp/main/install.ps1 | iex"
+)
+
+var notFoundDialogOpen atomic.Bool
+
+// showTgDlpNotFoundDialog tells the user tg-dlp is missing and how to get it.
+// Must be called on the UI thread (inside fyne.Do when called from a goroutine).
+func showTgDlpNotFoundDialog(w fyne.Window) {
+	// Several startup checks can fail at once; show only one dialog.
+	if !notFoundDialogOpen.CompareAndSwap(false, true) {
+		return
+	}
+
+	msg := widget.NewLabel("tg-dlp was not found in PATH or in the application folder.\nInstall it, then restart this app.")
+	msg.Wrapping = fyne.TextWrapWord
+
+	items := []fyne.CanvasObject{msg}
+
+	if u, err := url.Parse(tgDlpReleasesURL); err == nil {
+		items = append(items, widget.NewHyperlink("Download tg-dlp (GitHub Releases)", u))
+	}
+
+	if runtime.GOOS == "windows" {
+		psLbl := widget.NewLabel("Or run this in PowerShell:")
+		psEntry := widget.NewEntry()
+		psEntry.SetText(tgDlpInstallPS)
+		// keep it selectable/copyable but not editable
+		psEntry.OnChanged = func(t string) {
+			if t != tgDlpInstallPS {
+				psEntry.SetText(tgDlpInstallPS)
+			}
+		}
+		copyBtn := widget.NewButtonWithIcon("Copy command", theme.ContentCopyIcon(), func() {
+			w.Clipboard().SetContent(tgDlpInstallPS)
+		})
+		items = append(items, psLbl, psEntry, copyBtn)
+	}
+
+	d := dialog.NewCustom("tg-dlp not found", "OK", container.NewVBox(items...), w)
+	d.SetOnClosed(func() { notFoundDialogOpen.Store(false) })
+	d.Resize(fyne.NewSize(600, 260))
+	d.Show()
+}
+
+// ============================================================
 // Main
 // ============================================================
 
 func main() {
 	a := app.New()
 	w := a.NewWindow("tg-dlp GUI (Fyne)")
-	w.Resize(fyne.NewSize(820, 650))
+
+	// Last used configuration + task history (stored in the user's config dir)
+	cfg, haveCfg := loadConfig()
+	historyDB := openHistory()
+
+	if cfg.WinW >= 600 && cfg.WinH >= 450 {
+		w.Resize(fyne.NewSize(cfg.WinW, cfg.WinH))
+	} else {
+		w.Resize(fyne.NewSize(820, 650))
+	}
 
 	if len(appIconBytes) > 0 {
 		w.SetIcon(fyne.NewStaticResource("app-icon.png", appIconBytes))
@@ -758,8 +837,8 @@ func main() {
 	var themeImg, repoImg, infoImg, settingsImg, heartImg *canvas.Image
 	var themeView, repoView, infoView, settingsView, heartView fyne.CanvasObject
 
-	themeImg, themeView = makeCircleIconBtn(activeIcons().sun, func() {
-		isDarkTheme = !isDarkTheme
+	applyTheme := func(dark bool) {
+		isDarkTheme = dark
 		icons := activeIcons()
 		if isDarkTheme {
 			a.Settings().SetTheme(theme.DarkTheme())
@@ -786,20 +865,20 @@ func main() {
 		if content := w.Canvas().Content(); content != nil {
 			content.Refresh()
 		}
+	}
+
+	themeImg, themeView = makeCircleIconBtn(activeIcons().sun, func() {
+		applyTheme(!isDarkTheme)
 	})
 
 	repoImg, repoView = makeCircleIconBtn(activeIcons().github, func() {
-		if u, err := url.Parse("https://github.com/YawStar/tg-dlp-gui/"); err == nil {
+		if u, err := url.Parse(AppRepoURL); err == nil {
 			_ = a.OpenURL(u)
 		}
 	})
 
 	infoImg, infoView = makeCircleIconBtn(activeIcons().info, func() {
-		dialog.ShowInformation(
-			"About tg-dlp GUI",
-			"tg-dlp GUI (Fyne)\nFull-featured GUI wrapper for YawStar tg-dlp.\nSupports download, upload, export, backup, restore, info, delete, purge, accounts & session tools.",
-			w,
-		)
+		showAboutDialog(a, w)
 	})
 
 	var openSettingsAndAccountsDialog func()
@@ -885,6 +964,32 @@ func main() {
 	// Upload options
 	photoCheck := widget.NewCheck("As Photo (--photo)", nil)
 	rmAfterUploadCheck := widget.NewCheck("Remove Local (--rm)", nil)
+
+	// "Browse" button next to the Output Dir field (shown for Download / Export only)
+	browseOutBtn := widget.NewButtonWithIcon("Browse", theme.FolderOpenIcon(), func() {
+		d := dialog.NewFolderOpen(func(dir fyne.ListableURI, err error) {
+			if err != nil {
+				dialog.ShowError(err, w)
+				return
+			}
+			if dir == nil {
+				return // cancelled
+			}
+			secondaryEntry.SetText(filepath.FromSlash(dir.Path()))
+		}, w)
+		// start in the folder that is already typed in (if it exists)
+		if p := strings.TrimSpace(secondaryEntry.Text); p != "" {
+			if abs, err := filepath.Abs(p); err == nil {
+				if st, err := os.Stat(abs); err == nil && st.IsDir() {
+					if lister, err := storage.ListerForURI(storage.NewFileURI(abs)); err == nil {
+						d.SetLocation(lister)
+					}
+				}
+			}
+		}
+		d.Resize(fyne.NewSize(720, 500))
+		d.Show()
+	})
 
 	// Info / Purge options
 	saveInfoCheck := widget.NewCheck("Save Info (--save)", nil)
@@ -1027,6 +1132,15 @@ func main() {
 		//  - "Total ..." line         -> bulk, drives the main bar
 		//  - per-file line before any Total line -> fallback, drives the main bar
 		drivesBar := isBar || (isFileLine && !sawTotal.Load())
+
+		// history: keep the result summary, and write everything except
+		// progress redraws to this task's log file (passwords masked)
+		if (isTotal || drivesBar) && prog.SizeText != "" {
+			histSummary.Store(prog.SizeText)
+		}
+		if !prog.HasPercent {
+			taskLog.Load().Line(redactURLPassword(clean))
+		}
 
 		pendMu.Lock()
 		// progress redraw lines of the same file are coalesced into one log line
@@ -1189,7 +1303,18 @@ func main() {
 		isHovered   bool
 	)
 
-	dlActionIconRes := svgIconResource("action_download.svg", downloadSVG, true)
+	// one icon per action label (see getActionLabel); the icon is always white on the coloured button
+	actionIconRes := map[string]fyne.Resource{
+		"Start Download": svgIconResource("action_download.svg", downloadSVG, true),
+		"Start Upload":   svgIconResource("action_upload.svg", actUploadSVG, true),
+		"Start Export":   svgIconResource("action_export.svg", actExportSVG, true),
+		"Start Backup":   svgIconResource("action_backup.svg", actBackupSVG, true),
+		"Start Restore":  svgIconResource("action_restore.svg", actRestoreSVG, true),
+		"Fetch Info":     svgIconResource("action_info.svg", actInfoSVG, true),
+		"Delete Post":    svgIconResource("action_delete.svg", actDeleteSVG, true),
+		"Purge Channel":  svgIconResource("action_purge.svg", actPurgeSVG, true),
+	}
+	dlActionIconRes := actionIconRes["Start Download"]
 	stopActionIconRes := svgIconResource("action_stop.svg", stopSVG, true)
 
 	darkBlue := color.NRGBA{R: 21, G: 62, B: 117, A: 255}
@@ -1252,6 +1377,8 @@ func main() {
 		if btnIcon != nil {
 			if strings.HasPrefix(text, "Stop") {
 				btnIcon.Resource = stopActionIconRes
+			} else if res, ok := actionIconRes[text]; ok {
+				btnIcon.Resource = res
 			} else {
 				btnIcon.Resource = dlActionIconRes
 			}
@@ -1314,6 +1441,7 @@ func main() {
 		running := cancel != nil
 		mu.Unlock()
 
+		browseOutBtn.Hide()
 		dlOptsRow.Hide()
 		upOptsRow.Hide()
 		infoOptsRow.Hide()
@@ -1356,6 +1484,7 @@ func main() {
 			quaternaryEntry.Hide()
 			concurrencyLabel.Hide()
 			concurrencyEntry.Hide()
+			browseOutBtn.Show()
 
 		case "Backup (backup)":
 			primaryFieldLabel.Text = "Source Dir (-d):"
@@ -1442,6 +1571,7 @@ func main() {
 			concurrencyLabel.SetText("Concurrency:")
 			concurrencyEntry.SetPlaceHolder("Workers (--concurrency, e.g. 5)")
 			dlOptsRow.Show()
+			browseOutBtn.Show()
 		}
 
 		primaryFieldLabel.Refresh()
@@ -1454,8 +1584,100 @@ func main() {
 		setActionState(getActionLabel(selected, running), loggedIn || running)
 	}
 
+	// --------------------------------------------------------
+	// Remember last used values (one profile per command)
+	// --------------------------------------------------------
+
+	// Destructive flags are deliberately NOT remembered (Skip Confirm -y,
+	// Remove Local --rm): they must be ticked again every time.
+	profileChecks := map[string]*widget.Check{
+		"skipSame":  skipSameCheck,
+		"overwrite": overwriteCheck,
+		"takeout":   takeoutCheck,
+		"autoJoin":  autoJoinCheck,
+		"dryRun":    dryRunCheck,
+		"photo":     photoCheck,
+		"save":      saveInfoCheck,
+		"text":      purgeTextCheck,
+		"media":     purgeMediaCheck,
+	}
+
+	captureProfile := func() formProfile {
+		p := formProfile{
+			Primary:     primaryEntry.Text,
+			Secondary:   secondaryEntry.Text,
+			Tertiary:    tertiaryEntry.Text,
+			Quaternary:  quaternaryEntry.Text,
+			Concurrency: concurrencyEntry.Text,
+			Extra:       customArgEntry.Text,
+			Checks:      map[string]bool{},
+		}
+		for k, c := range profileChecks {
+			p.Checks[k] = c.Checked
+		}
+		return p
+	}
+
+	applyProfile := func(p formProfile) {
+		primaryEntry.SetText(p.Primary)
+		secondaryEntry.SetText(p.Secondary)
+		tertiaryEntry.SetText(p.Tertiary)
+		quaternaryEntry.SetText(p.Quaternary)
+		concurrencyEntry.SetText(p.Concurrency)
+		customArgEntry.SetText(p.Extra)
+		for k, c := range profileChecks {
+			c.SetChecked(p.Checks[k])
+		}
+	}
+
+	profiles := cfg.Profiles
+	curCmd := commandSelect.Selected
+
 	commandSelect.OnChanged = func(sel string) {
+		profiles[curCmd] = captureProfile() // remember the command we are leaving
 		syncCommandUI(sel)
+		if p, ok := profiles[sel]; ok {
+			applyProfile(p)
+		} else {
+			// first visit: don't leak per-command values (e.g. a speed limit) from the previous command
+			tertiaryEntry.SetText("")
+			quaternaryEntry.SetText("")
+			concurrencyEntry.SetText("")
+		}
+		curCmd = sel
+	}
+
+	loadFromHistory := func(e historyEntry) {
+		if commandSelect.Selected != e.Command {
+			commandSelect.SetSelected(e.Command)
+		}
+		if e.Form != nil {
+			applyProfile(*e.Form)
+		}
+		statusLabel.SetText("Loaded settings from history")
+		w.RequestFocus()
+	}
+
+	snapshotConfig := func() appConfig {
+		profiles[curCmd] = captureProfile()
+		c := appConfig{
+			Command: commandSelect.Selected,
+			Theme:   "dark",
+			Proxy:   proxyEntry.Text,
+			Global: map[string]bool{
+				"noProxy":   noProxyCheck.Checked,
+				"skipFlood": skipFloodCheck.Checked,
+				"debug":     debugCheck.Checked,
+			},
+			Profiles: profiles,
+		}
+		if !isDarkTheme {
+			c.Theme = "light"
+		}
+		if sz := w.Canvas().Size(); sz.Width >= 600 && sz.Height >= 450 {
+			c.WinW, c.WinH = sz.Width, sz.Height
+		}
+		return c
 	}
 
 	// --------------------------------------------------------
@@ -1495,11 +1717,6 @@ func main() {
 
 		exePath, err := resolveTgDlpPath()
 		fmt.Println("[cmd] " + buildCommandLine(exePath, args))
-		logMu.Lock()
-		logBox.SetText("")
-		logBox.CursorRow = 0
-		logLines = nil
-		logMu.Unlock()
 
 		if err != nil {
 			mu.Lock()
@@ -1511,10 +1728,41 @@ func main() {
 				statusLabel.SetText("tg-dlp not found")
 				setTaskbarError(w)
 				setActionState(getActionLabel(commandSelect.Selected, false), hasLogin)
+				showTgDlpNotFoundDialog(w)
 			})
 			return
 		}
 		exePathGlobal = exePath
+
+		// ---- history: record this task and open its log file ----
+		hForm := captureProfile()
+		hEntry := historyEntry{
+			ID:      time.Now().Format("20060102-150405.000") + "-" + cmdShortName(taskTitle),
+			Command: taskTitle,
+			Target:  strings.TrimSpace(primaryEntry.Text),
+			CmdLine: buildCommandLine("tg-dlp", redactArgs(args)),
+			Started: time.Now(),
+			Status:  "running",
+			Form:    &hForm,
+		}
+		hEntry.LogFile = hEntry.ID + ".log"
+		historyDB.Add(hEntry)
+		hLog := newTaskLogger(filepath.Join(logsDir(), hEntry.LogFile))
+		taskLog.Store(hLog)
+		histSummary.Store("")
+		var hOnce sync.Once
+		finishHistory := func(status string, code int) {
+			hOnce.Do(func() {
+				taskLog.Store(nil)
+				hLog.Close()
+				e := hEntry
+				e.Ended = time.Now()
+				e.Status = status
+				e.ExitCode = code
+				e.Summary, _ = histSummary.Load().(string)
+				historyDB.Update(e)
+			})
+		}
 
 		stopping.Store(false)
 		sawTotal.Store(false)
@@ -1540,6 +1788,7 @@ func main() {
 			pty, err := startPTY(exePath, args)
 			if err != nil {
 				appendLogAndStats("[error] ConPTY start failed: " + err.Error())
+				finishHistory("failed", -1)
 				mu.Lock()
 				cancel = nil
 				mu.Unlock()
@@ -1681,6 +1930,14 @@ func main() {
 				appendLogAndStats("[done] All tasks completed!")
 				notifyDone("tg-dlp GUI", taskTitle+" finished!")
 			}
+
+			hStatus := "finished"
+			if ctx.Err() != nil {
+				hStatus = "cancelled"
+			} else if waitErr != nil || exitCode != 0 {
+				hStatus = "failed"
+			}
+			finishHistory(hStatus, exitCode)
 
 			if captureInfo && ctx.Err() == nil && len(captured) > 0 {
 				// drop the "Account: ..." header line (we only want the target's info)
@@ -2022,7 +2279,7 @@ func main() {
 				fyne.Do(func() {
 					statusLabel.SetText("tg-dlp not found")
 					if showPopup {
-						dialog.ShowError(fmt.Errorf("tg-dlp not found:\n%v", err), w)
+						showTgDlpNotFoundDialog(w)
 					}
 				})
 				return
@@ -2200,7 +2457,7 @@ func main() {
 		),
 		container.NewVBox(
 			secondaryFieldLabel,
-			makeClearableEntry(secondaryEntry),
+			container.NewBorder(nil, nil, nil, browseOutBtn, makeClearableEntry(secondaryEntry)),
 		),
 		container.NewVBox(
 			tertiaryLabel,
@@ -2273,9 +2530,14 @@ func main() {
 		progressSection,
 	)
 
+	historyBtn := widget.NewButtonWithIcon("History", theme.HistoryIcon(), func() {
+		showHistoryWindow(a, historyDB, loadFromHistory)
+	})
+	historyBtn.Importance = widget.LowImportance
+
 	statusBar := container.NewVBox(
 		widget.NewSeparator(),
-		container.NewBorder(nil, nil, statusLabel, clearLogBtn),
+		container.NewBorder(nil, nil, statusLabel, container.NewHBox(historyBtn, clearLogBtn)),
 	)
 
 	w.SetContent(
@@ -2290,7 +2552,32 @@ func main() {
 
 	// Initialize UI mode & disabled action button until account check completes
 	syncCommandUI("Download (dl)")
-	setActionState("Start Download", false)
+
+	// Restore the last used configuration
+	if haveCfg {
+		proxyEntry.SetText(cfg.Proxy)
+		noProxyCheck.SetChecked(cfg.Global["noProxy"])
+		skipFloodCheck.SetChecked(cfg.Global["skipFlood"])
+		debugCheck.SetChecked(cfg.Global["debug"])
+
+		if p, ok := profiles["Download (dl)"]; ok {
+			applyProfile(p) // we are on the default command right now
+		}
+		for _, opt := range commandSelect.Options {
+			if opt == cfg.Command && opt != commandSelect.Selected {
+				commandSelect.SetSelected(opt) // OnChanged applies that command's profile
+				break
+			}
+		}
+		if cfg.Theme == "light" {
+			applyTheme(false)
+		}
+	}
+	setActionState(getActionLabel(commandSelect.Selected, false), false)
+
+	// values used by the startup account check (a saved proxy may be required to reach Telegram)
+	startProxy := strings.TrimSpace(proxyEntry.Text)
+	startNoProxy := noProxyCheck.Checked
 
 	// --------------------------------------------------------
 	// Auto Check Account on Startup
@@ -2303,13 +2590,13 @@ func main() {
 		if err != nil {
 			fyne.Do(func() {
 				statusLabel.SetText("tg-dlp not found")
-				dialog.ShowError(fmt.Errorf("tg-dlp not found:\n%v", err), w)
+				showTgDlpNotFoundDialog(w)
 			})
 			return
 		}
 		exePathGlobal = exePath
 
-		outStr, loggedIn := checkWhoAmI(exePath, "", false)
+		outStr, loggedIn := checkWhoAmI(exePath, startProxy, startNoProxy)
 		mu.Lock()
 		hasLogin = loggedIn
 		mu.Unlock()
@@ -2333,12 +2620,35 @@ func main() {
 	// Window Close Handler
 	// --------------------------------------------------------
 
+	// Auto-save the configuration whenever it changed (checked every 2s)
+	go func() {
+		last := ""
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			fyne.Do(func() {
+				c := snapshotConfig()
+				b, err := json.Marshal(c)
+				if err != nil || string(b) == last {
+					return
+				}
+				if saveConfig(c) == nil {
+					last = string(b)
+				}
+			})
+		}
+	}()
+
 	w.SetCloseIntercept(func() {
+		_ = saveConfig(snapshotConfig())
 		mu.Lock()
 		if cancel != nil {
 			cancel()
 		}
 		mu.Unlock()
+		if historyWin != nil {
+			historyWin.Close()
+		}
 		w.Close()
 	})
 
