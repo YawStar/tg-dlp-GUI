@@ -1441,6 +1441,13 @@ func main() {
 
 	tertiaryLabel := widget.NewLabel("Speed Limit (-r):")
 	quaternaryLabel := widget.NewLabel("Template (-t):")
+	// Download only: the filename template (-t) has its own field next to the filter (-i).
+	templateLabel := widget.NewLabel("Template (-t):")
+	templateEntry := widget.NewEntry()
+	templateEntry.SetPlaceHolder("e.g. {id}_{name}")
+	templateBox := makeClearableEntry(templateEntry)
+	templateLabel.Hide()
+	templateBox.Hide()
 	concurrencyLabel := widget.NewLabel("Concurrency (-c):")
 
 	dlOptsRow := container.NewHBox(skipSameCheck, overwriteCheck, takeoutCheck, autoJoinCheck, dryRunCheck)
@@ -1465,6 +1472,8 @@ func main() {
 		quaternaryLabel.Show()
 		tertiaryEntry.Show()
 		tertiaryLabel.Show()
+		templateLabel.Hide()
+		templateBox.Hide()
 
 		switch selected {
 		case "Upload (up)":
@@ -1579,8 +1588,10 @@ func main() {
 			}
 			tertiaryLabel.SetText("Speed Limit (-r):")
 			tertiaryEntry.SetPlaceHolder("Speed limit (-r, e.g. 500K, 1M, optional)")
-			quaternaryLabel.SetText("Filter / Template:")
-			quaternaryEntry.SetPlaceHolder("Filter (-i, e.g. mp4,mkv) or Template (-t, e.g. {id}_{ext})")
+			quaternaryLabel.SetText("Filter (-i):")
+			quaternaryEntry.SetPlaceHolder("e.g. mp4,mkv")
+			templateLabel.Show()
+			templateBox.Show()
 			concurrencyLabel.SetText("Concurrency:")
 			concurrencyEntry.SetPlaceHolder("Workers (--concurrency, e.g. 5)")
 			dlOptsRow.Show()
@@ -1621,6 +1632,7 @@ func main() {
 			Secondary:   secondaryEntry.Text,
 			Tertiary:    tertiaryEntry.Text,
 			Quaternary:  quaternaryEntry.Text,
+			Template:    templateEntry.Text,
 			Concurrency: concurrencyEntry.Text,
 			Extra:       customArgEntry.Text,
 			Checks:      map[string]bool{},
@@ -1636,6 +1648,7 @@ func main() {
 		secondaryEntry.SetText(p.Secondary)
 		tertiaryEntry.SetText(p.Tertiary)
 		quaternaryEntry.SetText(p.Quaternary)
+		templateEntry.SetText(p.Template)
 		concurrencyEntry.SetText(p.Concurrency)
 		customArgEntry.SetText(p.Extra)
 		for k, c := range profileChecks {
@@ -1655,6 +1668,7 @@ func main() {
 			// first visit: don't leak per-command values (e.g. a speed limit) from the previous command
 			tertiaryEntry.SetText("")
 			quaternaryEntry.SetText("")
+			templateEntry.SetText("")
 			concurrencyEntry.SetText("")
 		}
 		curCmd = sel
@@ -1729,7 +1743,7 @@ func main() {
 		resetStats()
 
 		exePath, err := resolveTgDlpPath()
-		fmt.Println("[cmd] " + buildCommandLine(exePath, redactArgs(args)))
+		// fmt.Println("[cmd] " + buildCommandLine(exePath, redactArgs(args)))
 
 		if err != nil {
 			mu.Lock()
@@ -2135,12 +2149,15 @@ func main() {
 			if tVal != "" {
 				args = append(args, "-r", tVal)
 			}
-			if qVal != "" {
-				if strings.Contains(qVal, "{") {
-					args = append(args, "-t", qVal)
-				} else {
-					args = append(args, "-i", qVal)
+			filterVal, tmplVal := splitFilterTemplate(qVal, strings.TrimSpace(templateEntry.Text))
+			if filterVal != "" {
+				args = append(args, "-i", filterVal)
+			}
+			if tmplVal != "" {
+				if err := validateFilenameTemplate(tmplVal); err != nil {
+					return nil, taskName, err
 				}
+				args = append(args, "-t", tmplVal)
 			}
 			if cVal != "" {
 				if _, err := strconv.Atoi(cVal); err != nil {
@@ -2488,7 +2505,7 @@ func main() {
 		)
 
 		d := dialog.NewCustom("tg-dlp Settings & Accounts", "Close", container.NewVScroll(content), w)
-		d.Resize(fyne.NewSize(620, 560))
+		d.Resize(fyne.NewSize(620, 600))
 		d.Show()
 	}
 
@@ -2523,8 +2540,8 @@ func main() {
 			makeClearableEntry(tertiaryEntry),
 		),
 		container.NewVBox(
-			quaternaryLabel,
-			makeClearableEntry(quaternaryEntry),
+			container.New(&equalHBoxLayout{gap: theme.Padding()}, quaternaryLabel, templateLabel),
+			container.New(&equalHBoxLayout{gap: theme.Padding()}, makeClearableEntry(quaternaryEntry), templateBox),
 		),
 		container.NewVBox(
 			concurrencyLabel,

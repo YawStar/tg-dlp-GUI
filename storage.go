@@ -71,6 +71,7 @@ type formProfile struct {
 	Secondary   string          `json:"secondary"`
 	Tertiary    string          `json:"tertiary"`
 	Quaternary  string          `json:"quaternary"`
+	Template    string          `json:"template,omitempty"`
 	Concurrency string          `json:"concurrency"`
 	Extra       string          `json:"extra"`
 	Checks      map[string]bool `json:"checks,omitempty"`
