@@ -121,6 +121,19 @@ const (
 	actDeleteSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash preview-icon"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`
 
 	actPurgeSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 22-1-4"/><path d="M19 14a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2h-3a1 1 0 0 1-1-1V4a2 2 0 0 0-4 0v5a1 1 0 0 1-1 1H6a2 2 0 0 0-2 2v1a1 1 0 0 0 1 1"/><path d="M19 14H5l-1.973 6.767A1 1 0 0 0 4 22h16a1 1 0 0 0 .973-1.233z"/><path d="m8 22 1-4"/></svg>`
+
+	// ---- Settings & Accounts dialog button icons ----
+	accountsSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-user-round-cog preview-icon"><path d="m14.305 19.53.923-.382"/><path d="m15.228 16.852-.923-.383"/><path d="m16.852 15.228-.383-.923"/><path d="m16.852 20.772-.383.924"/><path d="m19.148 15.228.383-.923"/><path d="m19.53 21.696-.382-.924"/><path d="M2 21a8 8 0 0 1 10.434-7.62"/><path d="m20.772 16.852.924-.383"/><path d="m20.772 19.148.924.383"/><circle cx="10" cy="8" r="5"/><circle cx="18" cy="18" r="3"/></svg>`
+
+	whoamiSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-user-round preview-icon"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>`
+
+	clearCacheSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>`
+
+	logoutSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-log-out preview-icon"><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/></svg>`
+
+	versionSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><path d="M7 7h.01"/></svg>`
+
+	updateSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>`
 )
 
 type iconSet struct {
@@ -2328,114 +2341,154 @@ func main() {
 	}
 
 	openSettingsAndAccountsDialog = func() {
-		pwEntry := widget.NewPasswordEntry()
-		pwEntry.SetPlaceHolder("Session password")
+		// ---- Appearance ----
+		themeSel := widget.NewSelect([]string{"Dark", "Light"}, func(v string) {
+			applyTheme(v == "Dark") // saved with the rest of the config
+		})
+		if isDarkTheme {
+			themeSel.SetSelected("Dark")
+		} else {
+			themeSel.SetSelected("Light")
+		}
 
-		profileEntry := widget.NewEntry()
-		profileEntry.SetPlaceHolder("Profile name (required)")
+		// ---- Accounts ----
+		accountsBtn := widget.NewButtonWithIcon(
+			"Manage Accounts",
+			svgIconResource("set_accounts.svg", accountsSVG, isDarkTheme),
+			func() {
+				showAccountsDialog(
+					w,
+					func() []string { // proxy flags for the QR login
+						if p := strings.TrimSpace(proxyEntry.Text); p != "" {
+							return []string{"--proxy", p}
+						}
+						if noProxyCheck.Checked {
+							return []string{"--no-proxy"}
+						}
+						return nil
+					},
+					func() { refreshAccountStatus(false) }, // account changed -> re-check whoami
+				)
+			},
+		)
 
-		cacheSecEntry := widget.NewEntry()
-		cacheSecEntry.SetPlaceHolder("Cache seconds (e.g. 0)")
-		cacheSecEntry.SetText("0")
+		whoamiBtn := widget.NewButtonWithIcon(
+			"WhoAmI",
+			svgIconResource("set_whoami.svg", whoamiSVG, isDarkTheme),
+			func() {
+				refreshAccountStatus(true)
+			},
+		)
 
-		accountsBtn := widget.NewButton("Manage Accounts", func() {
-			showAccountsDialog(
-				w,
-				func() []string { // proxy flags for the QR login
-					if p := strings.TrimSpace(proxyEntry.Text); p != "" {
-						return []string{"--proxy", p}
+		// ---- Current account ----
+		accountNote := widget.NewLabel("These two apply to the current account (choose it in Manage Accounts).")
+		accountNote.Wrapping = fyne.TextWrapWord
+
+		clearCacheBtn := widget.NewButtonWithIcon(
+			"Clear Cache",
+			svgIconResource("set_clear_cache.svg", clearCacheSVG, isDarkTheme),
+			func() {
+				dialog.ShowConfirm("Clear Session Cache", "Clear ONLY the cached session password?", func(ok bool) {
+					if ok {
+						startCommandExecution([]string{"clear-cache"}, "Clear Cache")
 					}
-					if noProxyCheck.Checked {
-						return []string{"--no-proxy"}
+				}, w)
+			},
+		)
+
+		logoutBtn := widget.NewButtonWithIcon(
+			"Logout",
+			svgIconResource("set_logout.svg", logoutSVG, !isDarkTheme), // Danger button background ပေါ်မှာ အမြဲအဖြူရောင်ပေါ်အောင် true ပေးထားပါတယ်
+			func() {
+				dialog.ShowConfirm("Logout", "Clear the cached session password and logout?", func(ok bool) {
+					if ok {
+						startCommandExecution([]string{"logout"}, "Logout")
 					}
-					return nil
-				},
-				func() { refreshAccountStatus(false) }, // account changed -> re-check whoami
-			)
-		})
-
-		whoamiBtn := widget.NewButton("WhoAmI", func() {
-			refreshAccountStatus(true)
-		})
-
-		versionBtn := widget.NewButton("tg-dlp Version", func() {
-			runCommandWithPopup(
-				w,
-				"tg-dlp Version",
-				[]string{"version"},
-				strings.TrimSpace(proxyEntry.Text),
-				noProxyCheck.Checked,
-				appendLogAndStats,
-			)
-		})
-
-		updateBtn := widget.NewButton("tg-dlp Update", func() {
-			runCommandWithPopup(
-				w,
-				"tg-dlp Update",
-				[]string{"update"},
-				strings.TrimSpace(proxyEntry.Text),
-				noProxyCheck.Checked,
-				appendLogAndStats,
-			)
-		})
-
-		setPWBtn := widget.NewButton("Set Password (config-pw)", func() {
-			pw := strings.TrimSpace(pwEntry.Text)
-			if pw == "" {
-				dialog.ShowError(fmt.Errorf("Please enter a session password."), w)
-				return
-			}
-			prof := strings.TrimSpace(profileEntry.Text)
-			if prof == "" {
-				dialog.ShowError(fmt.Errorf("Please enter a profile name."), w)
-				return
-			}
-			startCommandExecution([]string{"config-pw", pw, "--profile", prof}, "Config Password")
-		})
-
-		setCacheBtn := widget.NewButton("Set Cache (config-cache)", func() {
-			sec := strings.TrimSpace(cacheSecEntry.Text)
-			if _, err := strconv.Atoi(sec); err != nil {
-				dialog.ShowError(fmt.Errorf("Cache value must be an integer (e.g. 0)."), w)
-				return
-			}
-			startCommandExecution([]string{"config-cache", sec}, "Config Cache")
-		})
-
-		clearCacheBtn := widget.NewButton("Clear Cache", func() {
-			dialog.ShowConfirm("Clear Session Cache", "Clear ONLY the cached session password?", func(ok bool) {
-				if ok {
-					startCommandExecution([]string{"clear-cache"}, "Clear Cache")
-				}
-			}, w)
-		})
-
-		logoutBtn := widget.NewButton("Logout", func() {
-			dialog.ShowConfirm("Logout", "Clear the cached session password and logout?", func(ok bool) {
-				if ok {
-					startCommandExecution([]string{"logout"}, "Logout")
-				}
-			}, w)
-		})
+				}, w)
+			},
+		)
 		logoutBtn.Importance = widget.DangerImportance
 
+		// ---- Folders ----
+		showFolderErr := func(err error) {
+			if err != nil {
+				dialog.ShowError(err, w)
+			}
+		}
+		openDataBtn := widget.NewButtonWithIcon("tg-dlp data folder", theme.FolderOpenIcon(), func() {
+			cfg, err := tgDlpConfigDir()
+			if err != nil {
+				showFolderErr(err)
+				return
+			}
+			showFolderErr(openFolder(cfg))
+		})
+		openLogsBtn := widget.NewButtonWithIcon("GUI logs folder", theme.FolderOpenIcon(), func() {
+			showFolderErr(openFolder(logsDir()))
+		})
+
+		// ---- tg-dlp ----
+		pathText := "tg-dlp not found"
+		if p, err := resolveTgDlpPath(); err == nil {
+			pathText = p
+		}
+		pathLbl := widget.NewLabel("Using: " + pathText)
+		pathLbl.Wrapping = fyne.TextWrapBreak
+
+		versionBtn := widget.NewButtonWithIcon(
+			"tg-dlp Version",
+			svgIconResource("set_version.svg", versionSVG, isDarkTheme),
+			func() {
+				runCommandWithPopup(
+					w,
+					"tg-dlp Version",
+					[]string{"version"},
+					strings.TrimSpace(proxyEntry.Text),
+					noProxyCheck.Checked,
+					appendLogAndStats,
+				)
+			},
+		)
+
+		updateBtn := widget.NewButtonWithIcon(
+			"tg-dlp Update",
+			svgIconResource("set_update.svg", updateSVG, isDarkTheme),
+			func() {
+				runCommandWithPopup(
+					w,
+					"tg-dlp Update",
+					[]string{"update"},
+					strings.TrimSpace(proxyEntry.Text),
+					noProxyCheck.Checked,
+					appendLogAndStats,
+				)
+			},
+		)
+
+		bold := func(s string) *widget.Label {
+			return widget.NewLabelWithStyle(s, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+		}
 		content := container.NewVBox(
-			widget.NewLabelWithStyle("Authentication & Accounts", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			bold("Appearance"),
+			container.NewGridWithColumns(2, widget.NewLabel("Theme"), themeSel),
+			widget.NewSeparator(),
+			bold("Authentication & Accounts"),
 			container.NewGridWithColumns(2, accountsBtn, whoamiBtn),
 			widget.NewSeparator(),
-			widget.NewLabelWithStyle("Session Password & Cache", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-			container.NewGridWithColumns(2, pwEntry, profileEntry),
-			setPWBtn,
-			container.NewGridWithColumns(2, cacheSecEntry, setCacheBtn),
+			bold("Current account"),
+			accountNote,
 			container.NewGridWithColumns(2, clearCacheBtn, logoutBtn),
 			widget.NewSeparator(),
-			widget.NewLabelWithStyle("App Utilities", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			bold("Folders"),
+			container.NewGridWithColumns(2, openDataBtn, openLogsBtn),
+			widget.NewSeparator(),
+			bold("tg-dlp"),
+			pathLbl,
 			container.NewGridWithColumns(2, versionBtn, updateBtn),
 		)
 
-		d := dialog.NewCustom("tg-dlp Settings & Accounts", "Close", content, w)
-		d.Resize(fyne.NewSize(620, 440))
+		d := dialog.NewCustom("tg-dlp Settings & Accounts", "Close", container.NewVScroll(content), w)
+		d.Resize(fyne.NewSize(620, 560))
 		d.Show()
 	}
 

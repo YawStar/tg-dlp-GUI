@@ -224,6 +224,7 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 	switchBtn.Importance = widget.HighImportance
 	addBtn := widget.NewButtonWithIcon(" Add account (QR login)", theme.ContentAddIcon(), nil)
 	renameBtn := widget.NewButtonWithIcon("Rename profile", theme.DocumentCreateIcon(), nil)
+	passwordBtn := widget.NewButtonWithIcon("Change password", theme.VisibilityIcon(), nil)
 	removeBtn := widget.NewButtonWithIcon(" Remove", theme.ContentRemoveIcon(), nil)
 	removeBtn.Importance = widget.DangerImportance
 	refreshBtn := widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), nil)
@@ -246,6 +247,7 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 		it, ok := current()
 		setEnabled(switchBtn, !busy && ok && !it.Current)
 		setEnabled(renameBtn, !busy && ok)
+		setEnabled(passwordBtn, !busy && ok)
 		setEnabled(removeBtn, !busy && ok)
 		setEnabled(addBtn, !busy)
 		setEnabled(refreshBtn, !busy)
@@ -441,6 +443,17 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 		})
 	}
 
+	// ---- Change session password / remember time ----
+	passwordBtn.OnTapped = func() {
+		it, ok := current()
+		if !ok {
+			return
+		}
+		showChangePasswordDialog(w, it, func(msg string) {
+			reload(it.Profile, msg)
+		})
+	}
+
 	refreshBtn.OnTapped = func() {
 		it, ok := current()
 		keep := ""
@@ -452,7 +465,7 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 
 	buttons := container.NewVBox(
 		container.NewGridWithColumns(3, switchBtn, renameBtn, removeBtn),
-		container.NewGridWithColumns(2, addBtn, refreshBtn),
+		container.NewGridWithColumns(3, addBtn, passwordBtn, refreshBtn),
 	)
 	content := container.NewBorder(
 		nil,

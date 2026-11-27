@@ -1,13 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"image"
-	"regexp"
-	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -20,44 +18,54 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	tdaccounts "tg-dlp/core/accounts"
 )
 
 // ============================================================
 // Add account (GUI version of the CLI "+ Add account" flow)
 //
 //   1. form: profile name, session password (min 4), remember for ...
-//   2. tg-dlp config-pw <password> --profile <name>
-//   3. tg-dlp config-cache <seconds> --profile <name>
-//   4. tg-dlp login --qr-url --profile <name>   -> the printed URL is drawn as a QR code
-//   5. tg-dlp switch <name>
+//   2. qrlogin.go runs the QR login natively with the tg-dlp packages
+//      (no tg-dlp process): the session file, password cache and .meta are
+//      created exactly like "tg-dlp login --qr --profile <n>" does, and the
+//      new account becomes the current one (like "tg-dlp switch <n>")
+//   3. the login link is drawn as a QR code; the Telegram 2-step password
+//      is asked inside the dialog when the account needs it
 // ============================================================
 
 const minSessionPassword = 4
 
 type cacheChoice struct {
 	Label   string
-	Seconds int
+	Seconds int // 0 = until the session file is deleted, qrCacheNever = do not remember
 }
 
-// "Remember the session password for ..." -> value given to "tg-dlp config-cache".
-// 0 = until the session file is deleted (never expires).
-// If your tg-dlp expects the menu number (1-4 / 0) instead of seconds, change it HERE only.
+// "Remember the session password for ..." (same options as "tg-dlp config-cache").
 var cacheChoices = []cacheChoice{
 	{"30 minutes (default)", 1800},
 	{"1 hour", 3600},
 	{"2 hours", 7200},
 	{"3 hours", 10800},
+	{"Once (do not remember)", qrCacheNever},
 	{"Until session expires (forever)", 0},
 }
 
-var (
-	oscRe      = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
-	loginURLRe = regexp.MustCompile(`tg://[^\s"'<>\x1b\x00-\x1f]+`)
-)
-
-// cleanPTY strips terminal control sequences from raw pty output.
-func cleanPTY(s string) string {
-	return stripANSI(oscRe.ReplaceAllString(s, ""))
+// proxyFromArgs turns the global proxy flags the dialog receives
+// ("--proxy <url>" / "--no-proxy") into the values the login needs.
+func proxyFromArgs(args []string) (proxy string, noProxy bool) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--proxy":
+			if i+1 < len(args) {
+				proxy = args[i+1]
+				i++
+			}
+		case "--no-proxy":
+			noProxy = true
+		}
+	}
+	return proxy, noProxy
 }
 
 func validateProfileName(name string, existing []accountItem) error {
@@ -177,12 +185,12 @@ func showAddAccountDialog(w fyne.Window, existing []accountItem, proxyArgs func(
 	d.Show()
 }
 
-// showAddProgressDialog runs the commands and shows the login QR code.
+// showAddProgressDialog runs the QR login (qrlogin.go) and shows the QR code.
 func showAddProgressDialog(w fyne.Window, name, pw string, choice cacheChoice, proxy []string, onDone func(profile string, added bool, msg string)) {
 	titles := []string{
-		"Set session password  (config-pw)",
-		"Set password cache  (config-cache)",
-		"Log in with the QR code  (login --qr-url)",
+		"Prepare the session",
+		"Scan the QR code with your phone",
+		"Save the account",
 	}
 	stepLbls := make([]*widget.Label, len(titles))
 	for i, t := range titles {
@@ -202,7 +210,7 @@ func showAddProgressDialog(w fyne.Window, name, pw string, choice cacheChoice, p
 	hint.Wrapping = fyne.TextWrapWord
 	hint.Hide()
 
-	curURL := ""
+	curURL := "" // only touched on the UI thread
 	linkEntry := widget.NewEntry()
 	linkEntry.OnChanged = func(t string) { // selectable, not editable
 		if t != curURL {
@@ -217,32 +225,39 @@ func showAddProgressDialog(w fyne.Window, name, pw string, choice cacheChoice, p
 	linkRow := container.NewBorder(nil, nil, nil, copyBtn, linkEntry)
 	linkRow.Hide()
 
-	outputLbl := widget.NewLabel("")
-	outputLbl.Wrapping = fyne.TextWrapWord
+	statusLbl := widget.NewLabel("")
+	statusLbl.Wrapping = fyne.TextWrapWord
+
+	// Telegram two-step verification password (shown only when the account needs it).
+	twoFALbl := widget.NewLabel("")
+	twoFALbl.Wrapping = fyne.TextWrapWord
+	twoFAEntry := widget.NewPasswordEntry()
+	twoFAEntry.SetPlaceHolder("Telegram 2-step password")
+	submitBtn := widget.NewButtonWithIcon("Send", theme.MailSendIcon(), nil)
+	pwCh := make(chan string, 1)
+	submit := func() {
+		txt := twoFAEntry.Text
+		if txt == "" {
+			return
+		}
+		select {
+		case pwCh <- txt:
+			twoFAEntry.SetText("")
+			twoFAEntry.Disable()
+			submitBtn.Disable()
+		default:
+		}
+	}
+	submitBtn.OnTapped = submit
+	twoFAEntry.OnSubmitted = func(string) { submit() }
+	twoFABox := container.NewVBox(widget.NewSeparator(), twoFALbl, container.NewBorder(nil, nil, nil, submitBtn, twoFAEntry))
+	twoFABox.Hide()
 
 	var (
 		finished  atomic.Bool
 		cancelReq atomic.Bool
-		ptyMu     sync.Mutex
-		curPTY    ptySession
+		curStep   atomic.Int32
 	)
-
-	inputEntry := widget.NewPasswordEntry()
-	inputEntry.SetPlaceHolder("Type here and press Send")
-	sendBtn := widget.NewButtonWithIcon("Send", theme.MailSendIcon(), nil)
-	sendBtn.OnTapped = func() {
-		txt := inputEntry.Text
-		inputEntry.SetText("")
-		ptyMu.Lock()
-		p := curPTY
-		ptyMu.Unlock()
-		if p != nil {
-			_, _ = p.Write([]byte(txt + "\r"))
-		}
-	}
-	inputEntry.OnSubmitted = func(string) { sendBtn.OnTapped() }
-	inputEntry.Disable()
-	sendBtn.Disable()
 
 	content := container.NewVBox(
 		stepLbls[0], stepLbls[1], stepLbls[2],
@@ -250,13 +265,13 @@ func showAddProgressDialog(w fyne.Window, name, pw string, choice cacheChoice, p
 		container.NewCenter(qrImg),
 		hint,
 		linkRow,
-		outputLbl,
-		widget.NewSeparator(),
-		widget.NewLabel("If tg-dlp asks for input (e.g. your Telegram 2-step password):"),
-		container.NewBorder(nil, nil, nil, sendBtn, inputEntry),
+		statusLbl,
+		twoFABox,
 	)
 	scroll := container.NewVScroll(content)
 	scroll.SetMinSize(fyne.NewSize(520, 520))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 
 	d := dialog.NewCustom("Add account: "+name, "Cancel", scroll, w)
 	d.SetOnClosed(func() {
@@ -264,18 +279,74 @@ func showAddProgressDialog(w fyne.Window, name, pw string, choice cacheChoice, p
 			return
 		}
 		cancelReq.Store(true) // user pressed Cancel
-		ptyMu.Lock()
-		p := curPTY
-		ptyMu.Unlock()
-		if p != nil {
-			p.Kill()
-		}
+		cancel()
 	})
 	d.Resize(fyne.NewSize(580, 620))
 	d.Show()
 
+	hooks := qrLoginHooks{
+		ShowQR: func(u string) {
+			q, err := qrcode.New(u, qrcode.Medium)
+			if err != nil {
+				return
+			}
+			img := q.Image(-6) // 6 px per module, sharp edges
+			fyne.Do(func() {
+				curURL = u
+				linkEntry.SetText(u)
+				qrImg.Image = img
+				qrImg.Show()
+				qrImg.Refresh()
+				hint.Show()
+				linkRow.Show()
+			})
+		},
+		Stage: func(s qrStage) {
+			switch s {
+			case stageScan:
+				if curStep.Swap(1) < 1 {
+					setStep(0, "[ OK ]")
+					setStep(1, "[...]")
+				}
+			case stageSaving:
+				if curStep.Swap(2) < 2 {
+					setStep(1, "[ OK ]")
+					setStep(2, "[...]")
+				}
+			}
+		},
+		Status: func(msg string) {
+			fyne.Do(func() { statusLbl.SetText(msg) })
+		},
+		AskPassword: func(ctx context.Context, retry bool) (string, error) {
+			msg := "This account uses two-step verification.\nEnter your Telegram password (not the session password):"
+			if retry {
+				msg = "Wrong password. Try again:"
+			}
+			fyne.Do(func() {
+				qrImg.Hide() // the QR code was already scanned
+				hint.Hide()
+				linkRow.Hide()
+				twoFALbl.SetText(msg)
+				twoFAEntry.Enable()
+				submitBtn.Enable()
+				twoFABox.Show()
+				w.Canvas().Focus(twoFAEntry)
+			})
+			select {
+			case p := <-pwCh:
+				return p, nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		},
+	}
+
 	// ---------- worker ----------
 	go func() {
+		defer cancel()
+		setStep(0, "[...]")
+
 		hidePW := func(s string) string { return strings.ReplaceAll(s, pw, "***") }
 		end := func(added bool, msg string, showErr bool) {
 			finished.Store(true)
@@ -287,194 +358,40 @@ func showAddProgressDialog(w fyne.Window, name, pw string, choice cacheChoice, p
 				onDone(name, added, msg)
 			})
 		}
-		failStep := func(i int, out string, err error) {
-			setStep(i, "[FAIL]")
-			msg := cleanCLIText(hidePW(out))
-			if msg == "" {
-				msg = hidePW(err.Error())
-			}
-			end(false, "Could not add the account: "+msg, true)
-		}
-		cancelled := func() bool {
-			if cancelReq.Load() {
-				end(false, "Cancelled - the account was not added.", false)
-				return true
-			}
-			return false
-		}
 
-		// 1) config-pw
-		setStep(0, "[...]")
-		if out, err := runTgDlpHidden(30*time.Second, "config-pw", pw, "--profile", name); err != nil {
-			failStep(0, out, err)
-			return
-		}
-		setStep(0, "[ OK ]")
-		if cancelled() {
-			return
-		}
-
-		// 2) config-cache
-		setStep(1, "[...]")
-		if out, err := runTgDlpHidden(30*time.Second, "config-cache", strconv.Itoa(choice.Seconds), "--profile", name); err != nil {
-			failStep(1, out, err)
-			return
-		}
-		setStep(1, "[ OK ]")
-		if cancelled() {
-			return
-		}
-
-		// 3) login --qr-url  (hidden pty; the printed URL becomes a QR code)
-		setStep(2, "[...]")
-		exe, err := resolveTgDlpPath()
+		cfgDir, err := tgDlpConfigDir()
 		if err != nil {
-			failStep(2, "", err)
+			setStep(0, "[FAIL]")
+			end(false, "Could not add the account: "+err.Error(), true)
 			return
 		}
-		args := append(append([]string{}, proxy...), "login", "--qr-url", "--profile", name)
-		pty, err := startPTY(exe, args)
-		if err != nil {
-			failStep(2, "", err)
-			return
-		}
-		ptyMu.Lock()
-		curPTY = pty
-		ptyMu.Unlock()
-		if cancelReq.Load() { // Cancel was pressed while the pty was starting
-			pty.Kill()
-		}
-		fyne.Do(func() {
-			inputEntry.Enable()
-			sendBtn.Enable()
-		})
+		proxyURL, noProxy := proxyFromArgs(proxy)
 
-		var (
-			bufMu sync.Mutex
-			buf   strings.Builder
-		)
-		readDone := make(chan struct{})
-		go func() {
-			defer close(readDone)
-			tmp := make([]byte, 4096)
-			for {
-				n, rerr := pty.Read(tmp)
-				if n > 0 {
-					bufMu.Lock()
-					buf.Write(tmp[:n])
-					bufMu.Unlock()
-				}
-				if rerr != nil {
-					return
-				}
-			}
-		}()
-		snapshot := func() string {
-			bufMu.Lock()
-			defer bufMu.Unlock()
-			return cleanPTY(buf.String())
-		}
-
-		exited := make(chan int, 1)
-		go func() {
-			code, _ := pty.Wait()
-			exited <- code
-		}()
-
-		lastURL, lastTail := "", ""
-		exitCode, timedOut := -1, false
-		tick := time.NewTicker(250 * time.Millisecond)
-		timeout := time.After(5 * time.Minute)
-
-	wait:
-		for {
-			select {
-			case exitCode = <-exited:
-				break wait
-			case <-timeout:
-				timedOut = true
-				pty.Kill()
-				select {
-				case exitCode = <-exited:
-				case <-time.After(3 * time.Second):
-				}
-				break wait
-			case <-tick.C:
-				snap := snapshot()
-
-				// the newest URL wins (tg-dlp refreshes the QR code automatically)
-				if all := loginURLRe.FindAllString(snap, -1); len(all) > 0 {
-					if u := all[len(all)-1]; u != lastURL {
-						lastURL = u
-						if q, qerr := qrcode.New(u, qrcode.Medium); qerr == nil {
-							img := q.Image(-6) // 6 px per module, sharp edges
-							url := u
-							fyne.Do(func() {
-								curURL = url
-								linkEntry.SetText(url)
-								qrImg.Image = img
-								qrImg.Show()
-								qrImg.Refresh()
-								hint.Show()
-								linkRow.Show()
-							})
-						}
-					}
-				}
-
-				// last few lines tg-dlp printed (without the URL itself)
-				var keep []string
-				for _, ln := range strings.Split(snap, "\n") {
-					if strings.TrimSpace(ln) != "" && !strings.Contains(ln, "tg://") {
-						keep = append(keep, ln)
-					}
-				}
-				tail := cleanCLIText(strings.Join(keep, "\n"))
-				if tail != lastTail {
-					lastTail = tail
-					fyne.Do(func() { outputLbl.SetText(tail) })
-				}
-			}
-		}
-		tick.Stop()
-		_ = pty.Close()
-		select {
-		case <-readDone:
-		case <-time.After(2 * time.Second):
-		}
-		final := hidePW(cleanCLIText(snapshot()))
+		err = runQRLogin(ctx, qrLoginParams{
+			ConfigDir:    cfgDir,
+			Profile:      name,
+			Password:     pw,
+			CacheSeconds: choice.Seconds,
+			Proxy:        proxyURL,
+			NoProxy:      noProxy,
+		}, hooks)
 
 		switch {
 		case cancelReq.Load():
 			end(false, "Cancelled - the account was not added.", false)
-			return
-		case timedOut:
-			setStep(2, "[FAIL]")
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			setStep(int(curStep.Load()), "[FAIL]")
 			end(false, "The QR login timed out (5 minutes). Please try again.", true)
-			return
-		case exitCode != 0:
-			setStep(2, "[FAIL]")
-			if final == "" {
-				final = "tg-dlp exited with code " + strconv.Itoa(exitCode)
+		case err != nil:
+			setStep(int(curStep.Load()), "[FAIL]")
+			end(false, "Could not add the account: "+hidePW(cleanCLIText(friendlyLoginError(err))), true)
+		default:
+			setStep(2, "[ OK ]")
+			msg := "Account added: [profile: " + name + "]"
+			if a, ok := tdaccounts.Get(cfgDir, name); ok {
+				msg = fmt.Sprintf("Switched to %s [profile: %s]", cleanCLIText(a.Label()), name)
 			}
-			end(false, "Login failed: "+final, true)
-			return
+			end(true, msg, false)
 		}
-
-		// 4) make sure the account exists, then make it the current one
-		after, lerr := listAccounts()
-		if lerr != nil || !profileExists(after, name) {
-			setStep(2, "[FAIL]")
-			end(false, "Login finished, but the new account was not found in the list.", true)
-			return
-		}
-		setStep(2, "[ OK ]")
-		msg := "Account added: [profile: " + name + "]"
-		if out, serr := runTgDlpHidden(20*time.Second, "switch", name); serr == nil {
-			if t := cleanCLIText(out); t != "" {
-				msg = t
-			}
-		}
-		end(true, msg, false)
 	}()
 }
