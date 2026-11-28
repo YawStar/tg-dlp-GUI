@@ -44,7 +44,7 @@ type LoginStage int
 
 const (
 	StageScan   LoginStage = iota // waiting for the phone to scan the QR code
-	StageSaving                   // scanned, finishing the login
+	StageSaving                // scanned, finishing the login
 )
 
 // LoginHooks connects the login to the GUI. Every hook is called from the

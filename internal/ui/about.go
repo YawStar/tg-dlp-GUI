@@ -1,5 +1,4 @@
 // Package ui is the Fyne based user interface of tg-dlp GUI.
-
 package ui
 
 import (
@@ -21,7 +20,7 @@ import (
 
 const (
 	AppName        = "tg-dlp GUI"
-	AppVersion     = "1.0.1.3"
+	AppVersion     = "1.0.1.4"
 	AppReleaseDate = "30.Nov.2026"
 	AppDeveloper   = "YawHackka (YawStar)"
 	AppRepoURL     = "https://github.com/YawStar/tg-dlp-gui"

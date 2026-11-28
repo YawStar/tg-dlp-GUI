@@ -26,7 +26,7 @@ func StartPTY(exePath string, args []string) (PTYSession, error) {
 	return &winPTY{c: c}, nil
 }
 
-func (p *winPTY) Read(b []byte) (int, error) { return p.c.Read(b) }
+func (p *winPTY) Read(b []byte) (int, error)  { return p.c.Read(b) }
 
 func (p *winPTY) Write(b []byte) (int, error) { return p.c.Write(b) }
 

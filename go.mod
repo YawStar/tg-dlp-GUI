@@ -86,4 +86,4 @@ require (
 
 // The GUI uses the tg-dlp packages (core/client, core/session, core/accounts).
 // Adjust the path to where the tg-dlp source folder is. Then run: go mod tidy
-replace tg-dlp => ..\tg-dlp
+replace tg-dlp => ../tg-dlp

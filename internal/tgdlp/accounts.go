@@ -21,14 +21,12 @@ import (
 
 // ============================================================
 // Talks to the tg-dlp CLI:
-//
-//	list    tg-dlp accounts --list        (parsed)
-//	switch  tg-dlp switch <profile>
-//	rename  tg-dlp rename <profile> <new>
-//	remove  drives the interactive "tg-dlp accounts" menu inside a hidden pty
-//	        ("-", <number>, "y"), so tg-dlp itself deletes the session
-//	add     see accounts_add.go (config-pw, config-cache, login --qr-url -> QR code in the GUI)
-//
+//   list    tg-dlp accounts --list        (parsed)
+//   switch  tg-dlp switch <profile>
+//   rename  tg-dlp rename <profile> <new>
+//   remove  drives the interactive "tg-dlp accounts" menu inside a hidden pty
+//           ("-", <number>, "y"), so tg-dlp itself deletes the session
+//   add     see accounts_add.go (config-pw, config-cache, login --qr-url -> QR code in the GUI)
 // ============================================================
 type Account struct {
 	Index   int    // 1-based number as printed by "tg-dlp accounts"

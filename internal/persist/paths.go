@@ -7,15 +7,13 @@ import (
 
 // ============================================================
 // App data directory
+//   Windows : %AppData%\tg-dlp-gui\
+//   macOS   : ~/Library/Application Support/tg-dlp-gui/
+//   Linux   : ~/.config/tg-dlp-gui/
 //
-//	Windows : %AppData%\tg-dlp-gui\
-//	macOS   : ~/Library/Application Support/tg-dlp-gui/
-//	Linux   : ~/.config/tg-dlp-gui/
-//
-//	config.json   last used form values, theme, window size
-//	history.json  task history (newest last)
-//	logs/         one text log per task
-//
+//   config.json   last used form values, theme, window size
+//   history.json  task history (newest last)
+//   logs/         one text log per task
 // ============================================================
 const (
 	appDataDirName    = "tg-dlp-gui"

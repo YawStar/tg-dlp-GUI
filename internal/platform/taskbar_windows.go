@@ -35,8 +35,8 @@ var (
 	procCoInitializeEx   = ole32.NewProc("CoInitializeEx")
 	procCoCreateInstance = ole32.NewProc("CoCreateInstance")
 
-	user32          = syscall.NewLazyDLL("user32.dll")
-	procFindWindowW = user32.NewProc("FindWindowW")
+	user32           = syscall.NewLazyDLL("user32.dll")
+	procFindWindowW  = user32.NewProc("FindWindowW")
 )
 
 type iTaskbarList3Vtbl struct {

@@ -16,9 +16,8 @@ import (
 )
 
 // showAccountsDialog is the GUI version of the "tg-dlp accounts" menu.
-//
-//	proxyArgs: extra global flags (e.g. --proxy) used for the QR login
-//	onChanged: called after the active account / account list changed
+//   proxyArgs: extra global flags (e.g. --proxy) used for the QR login
+//   onChanged: called after the active account / account list changed
 func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func()) {
 	var (
 		items    []tgdlp.Account

@@ -40,9 +40,9 @@ type pendEntry struct {
 }
 
 // Run builds the main window and blocks until the application quits.
-
 func Run() {
-	a := app.New()
+	// The app ID is what Windows shows in the notification header.
+	a := app.NewWithID("io.github.yawstar.tg-dlp-gui")
 	w := a.NewWindow("tg-dlp GUI (Fyne)")
 
 	// Last used configuration + task history (stored in the user's config dir)
@@ -56,7 +56,9 @@ func Run() {
 	}
 
 	if len(assets.AppIcon) > 0 {
-		w.SetIcon(fyne.NewStaticResource("app-icon.png", assets.AppIcon))
+		iconRes := fyne.NewStaticResource("app-icon.png", assets.AppIcon)
+		a.SetIcon(iconRes) // also used as the notification icon
+		w.SetIcon(iconRes)
 	}
 
 	// --------------------------------------------------------
@@ -332,14 +334,30 @@ func Run() {
 	logBox := widget.NewMultiLineEntry()
 	logBox.SetPlaceHolder("tg-dlp output logs will appear here...")
 
-	clearLogBtn := widget.NewButton("Clear Log", func() {
+	// clearLog empties the log view and everything still queued for it.
+	// It is called by the "Clear Log" button and at the start of every task.
+	// Safe to call from any goroutine.
+	clearLog := func() {
+		pendMu.Lock()
+		pendLog, pendIdx = nil, nil
+		pendMu.Unlock()
+
 		logMu.Lock()
-		logBox.SetText("")
-		logBox.CursorRow = 0
 		logLines = nil
 		logMu.Unlock()
-	})
+
+		fyne.Do(func() {
+			logBox.SetText("")
+			logBox.CursorRow = 0
+		})
+	}
+
+	clearLogBtn := widget.NewButton("Clear Log", clearLog)
 	clearLogBtn.Importance = widget.LowImportance
+
+	// What to do when a task succeeds (never saved, always starts on "Do nothing").
+	afterSelect := newAfterTaskSelect()
+	var quitApp func() // assigned with the window close handler below
 
 	resetStats := func() {
 		fyne.Do(func() {
@@ -577,12 +595,12 @@ func Run() {
 	// --------------------------------------------------------
 
 	var (
-		actionBtn  *widget.Button
-		actionView fyne.CanvasObject
-		btnBg      *canvas.Rectangle
-		btnLabel   *canvas.Text
-		btnIcon    *canvas.Image
-		isHovered  bool
+		actionBtn   *widget.Button
+		actionView  fyne.CanvasObject
+		btnBg       *canvas.Rectangle
+		btnLabel    *canvas.Text
+		btnIcon     *canvas.Image
+		isHovered   bool
 	)
 
 	// one icon per action label (see getActionLabel); the icon is always white on the coloured button
@@ -1010,6 +1028,7 @@ func Run() {
 		mu.Unlock()
 
 		resetStats()
+		clearLog() // every task starts with an empty log
 
 		exePath, err := tgdlp.ResolvePath()
 		// fmt.Println("[cmd] " + platform.BuildCommandLine(exePath, persist.RedactArgs(args)))
@@ -1174,6 +1193,13 @@ func Run() {
 			captureInfo := taskTitle == "Info (info)"
 			var captured []string
 
+			// Info shows its own result dialog, so only the other tasks notify.
+			notifyTask := func(msg string) {
+				if !captureInfo {
+					notifyDone("tg-dlp GUI", msg)
+				}
+			}
+
 			scanDone := make(chan struct{})
 			go func() {
 				defer close(scanDone)
@@ -1214,21 +1240,21 @@ func Run() {
 					statusLabel.SetText(taskTitle + " cancelled")
 					platform.ClearTaskbarProgress(w)
 				})
-				notifyDone("tg-dlp GUI", taskTitle+" cancelled.")
+				notifyTask(taskTitle+" cancelled.")
 			} else if waitErr != nil {
 				appendLogAndStats("[error] " + waitErr.Error())
 				fyne.Do(func() {
 					statusLabel.SetText(taskTitle + " failed")
 					platform.SetTaskbarError(w)
 				})
-				notifyDone("tg-dlp GUI", taskTitle+" failed.")
+				notifyTask(taskTitle+" failed.")
 			} else if exitCode != 0 {
 				appendLogAndStats(fmt.Sprintf("[error] tg-dlp exited with code %d", exitCode))
 				fyne.Do(func() {
 					statusLabel.SetText(taskTitle + " failed")
 					platform.SetTaskbarError(w)
 				})
-				notifyDone("tg-dlp GUI", taskTitle+" failed.")
+				notifyTask(taskTitle+" failed.")
 			} else {
 				fyne.Do(func() {
 					barText = "100%"
@@ -1239,7 +1265,7 @@ func Run() {
 					platform.ClearTaskbarProgress(w)
 				})
 				appendLogAndStats("[done] All tasks completed!")
-				notifyDone("tg-dlp GUI", taskTitle+" finished!")
+				notifyTask(taskTitle+" finished!")
 			}
 
 			hStatus := "finished"
@@ -1249,6 +1275,9 @@ func Run() {
 				hStatus = "failed"
 			}
 			finishHistory(hStatus, exitCode)
+
+			// only the main commands (not Info or the settings helpers) and only on success
+			runAfter := hStatus == "finished" && recordHistory && !captureInfo
 
 			if captureInfo && ctx.Err() == nil && len(captured) > 0 {
 				// drop the "Account: ..." header line (we only want the target's info)
@@ -1283,6 +1312,9 @@ func Run() {
 				infiniteBar.Hide()
 				progressBar.Show()
 				setActionState(getActionLabel(commandSelect.Selected, false), hasLogin)
+				if runAfter {
+					runAfterTask(a, w, afterSelect.Selected, quitApp)
+				}
 			})
 		}()
 	}
@@ -1828,6 +1860,7 @@ func Run() {
 			layout.NewSpacer(),
 			container.NewHBox(
 				layout.NewSpacer(),
+				afterSelect,
 				actionView,
 			),
 			layout.NewSpacer(),
@@ -1984,7 +2017,7 @@ func Run() {
 		}
 	}()
 
-	w.SetCloseIntercept(func() {
+	quitApp = func() {
 		_ = persist.SaveConfig(snapshotConfig())
 		mu.Lock()
 		if cancel != nil {
@@ -1995,7 +2028,8 @@ func Run() {
 			historyWin.Close()
 		}
 		w.Close()
-	})
+	}
+	w.SetCloseIntercept(quitApp)
 
 	w.CenterOnScreen()
 	w.ShowAndRun()
