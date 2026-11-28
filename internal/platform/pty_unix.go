@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package platform
 
 import (
 	"errors"
@@ -20,7 +20,7 @@ type unixPTY struct {
 	f   *os.File
 }
 
-func startPTY(exePath string, args []string) (ptySession, error) {
+func StartPTY(exePath string, args []string) (PTYSession, error) {
 	cmd := exec.Command(exePath, args...)
 	cmd.Env = os.Environ()
 	if os.Getenv("TERM") == "" {
@@ -77,12 +77,11 @@ func (p *unixPTY) Close() error { return p.f.Close() }
 // ------------------------------------------------------------
 // Interactive terminal (login / accounts)
 // ------------------------------------------------------------
-
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-func runInTerminal(exePath string, args []string) error {
+func RunInTerminal(exePath string, args []string) error {
 	parts := []string{shQuote(exePath)}
 	for _, a := range args {
 		parts = append(parts, shQuote(a))
@@ -134,5 +133,5 @@ end tell`
 	return errors.New("no supported terminal emulator found (tried gnome-terminal, konsole, xfce4-terminal, kitty, alacritty, x-terminal-emulator, xterm)")
 }
 
-// hideConsole is a no-op outside Windows.
-func hideConsole(cmd *exec.Cmd) {}
+// HideConsole is a no-op outside Windows.
+func HideConsole(cmd *exec.Cmd) {}

@@ -1,8 +1,10 @@
-package main
+package ui
 
 import (
 	"errors"
 	"net/url"
+	"path/filepath"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/storage"
@@ -19,4 +21,13 @@ func openFolder(dir string) error {
 		return errors.New("the application is not running")
 	}
 	return app.OpenURL(u)
+}
+
+// openLocalPath opens a file or folder with the OS default handler.
+func openLocalPath(a fyne.App, p string) error {
+	u := &url.URL{Scheme: "file", Path: filepath.ToSlash(p)}
+	if !strings.HasPrefix(u.Path, "/") {
+		u.Path = "/" + u.Path // Windows drive paths: C:/... -> /C:/...
+	}
+	return a.OpenURL(u)
 }

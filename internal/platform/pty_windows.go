@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package platform
 
 import (
 	"context"
@@ -15,9 +15,9 @@ type winPTY struct {
 	c *conpty.ConPty
 }
 
-func startPTY(exePath string, args []string) (ptySession, error) {
+func StartPTY(exePath string, args []string) (PTYSession, error) {
 	c, err := conpty.Start(
-		buildCommandLine(exePath, args),
+		BuildCommandLine(exePath, args),
 		conpty.ConPtyDimensions(160, 40),
 	)
 	if err != nil {
@@ -26,7 +26,8 @@ func startPTY(exePath string, args []string) (ptySession, error) {
 	return &winPTY{c: c}, nil
 }
 
-func (p *winPTY) Read(b []byte) (int, error)  { return p.c.Read(b) }
+func (p *winPTY) Read(b []byte) (int, error) { return p.c.Read(b) }
+
 func (p *winPTY) Write(b []byte) (int, error) { return p.c.Write(b) }
 
 func (p *winPTY) Wait() (int, error) {
@@ -49,13 +50,13 @@ func (p *winPTY) Kill() {
 		}
 	}
 	kill := exec.Command("taskkill", args...)
-	hideConsole(kill)
+	HideConsole(kill)
 	_ = kill.Run()
 }
 
-// hideConsole stops Windows from flashing a console window when a console
+// HideConsole stops Windows from flashing a console window when a console
 // program (tg-dlp, taskkill) is started from this GUI app.
-func hideConsole(cmd *exec.Cmd) {
+func HideConsole(cmd *exec.Cmd) {
 	const createNoWindow = 0x08000000
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
@@ -68,11 +69,11 @@ func (p *winPTY) Close() error {
 	return nil
 }
 
-// runInTerminal opens a new console window running tg-dlp (login / accounts).
-func runInTerminal(exePath string, args []string) error {
+// RunInTerminal opens a new console window running tg-dlp (login / accounts).
+func RunInTerminal(exePath string, args []string) error {
 	// "start /wait" blocks until the window is closed, so the caller knows when the
 	// task is finished; "pause & exit" keeps the result readable, then closes the window.
-	line := buildCommandLine(exePath, args) + " & echo. & pause & exit"
+	line := BuildCommandLine(exePath, args) + " & echo. & pause & exit"
 	cmd := exec.Command("cmd.exe", "/c", "start", "/wait", "cmd.exe", "/k", line)
 	if err := cmd.Start(); err != nil {
 		return err

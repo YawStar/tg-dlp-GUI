@@ -1,10 +1,8 @@
-package main
+package ui
 
 import (
 	"fmt"
-	"net/url"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -12,19 +10,12 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	"tg-dlp_GUI/internal/persist"
 )
 
 // only one history window at a time
 var historyWin fyne.Window
-
-// openLocalPath opens a file or folder with the OS default handler.
-func openLocalPath(a fyne.App, p string) error {
-	u := &url.URL{Scheme: "file", Path: filepath.ToSlash(p)}
-	if !strings.HasPrefix(u.Path, "/") {
-		u.Path = "/" + u.Path // Windows drive paths: C:/... -> /C:/...
-	}
-	return a.OpenURL(u)
-}
 
 func statusTag(s string) string {
 	switch s {
@@ -42,7 +33,7 @@ func statusTag(s string) string {
 	return "[?]"
 }
 
-func entryDuration(e historyEntry) string {
+func entryDuration(e persist.HistoryEntry) string {
 	if e.Ended.IsZero() || e.Ended.Before(e.Started) {
 		return "-"
 	}
@@ -67,7 +58,7 @@ func newReadOnlyText() (*widget.Entry, func(string)) {
 
 // showHistoryWindow opens (or focuses) the task history window.
 // onLoad is called when the user presses "Load into form".
-func showHistoryWindow(a fyne.App, store *historyStore, onLoad func(historyEntry)) {
+func showHistoryWindow(a fyne.App, store *persist.HistoryStore, onLoad func(persist.HistoryEntry)) {
 	if historyWin != nil {
 		historyWin.RequestFocus()
 		return
@@ -84,7 +75,7 @@ func showHistoryWindow(a fyne.App, store *historyStore, onLoad func(historyEntry
 	filter := "All"
 
 	var (
-		shown    []historyEntry
+		shown    []persist.HistoryEntry
 		selected = -1
 		list     *widget.List
 	)
@@ -121,7 +112,7 @@ func showHistoryWindow(a fyne.App, store *historyStore, onLoad func(historyEntry
 		setLog("")
 	}
 
-	showDetail := func(e historyEntry) {
+	showDetail := func(e persist.HistoryEntry) {
 		cmdLbl.SetText(e.Command)
 		targetLbl.SetText(e.Target)
 		st := e.Status
@@ -140,7 +131,7 @@ func showHistoryWindow(a fyne.App, store *historyStore, onLoad func(historyEntry
 			setLog("(no log file)")
 			return
 		}
-		txt, err := readLogTail(e.LogFile, 512*1024)
+		txt, err := persist.ReadLogTail(e.LogFile, 512*1024)
 		if err != nil {
 			setLog("(log file not found - it may have been deleted)")
 			return
@@ -148,9 +139,9 @@ func showHistoryWindow(a fyne.App, store *historyStore, onLoad func(historyEntry
 		setLog(txt)
 	}
 
-	current := func() (historyEntry, bool) {
+	current := func() (persist.HistoryEntry, bool) {
 		if selected < 0 || selected >= len(shown) {
-			return historyEntry{}, false
+			return persist.HistoryEntry{}, false
 		}
 		return shown[selected], true
 	}
@@ -201,7 +192,7 @@ func showHistoryWindow(a fyne.App, store *historyStore, onLoad func(historyEntry
 				target = target[:37] + "..."
 			}
 			o.(*widget.Label).SetText(fmt.Sprintf("%-7s %s  %s  %s",
-				statusTag(e.Status), e.Started.Format("01-02 15:04"), cmdShortName(e.Command), target))
+				statusTag(e.Status), e.Started.Format("01-02 15:04"), persist.CmdShortName(e.Command), target))
 		},
 	)
 	list.OnSelected = func(id widget.ListItemID) {
@@ -231,7 +222,7 @@ func showHistoryWindow(a fyne.App, store *historyStore, onLoad func(historyEntry
 	})
 	openLogBtn := widget.NewButtonWithIcon("Open log file", theme.DocumentIcon(), func() {
 		if e, ok := current(); ok && e.LogFile != "" {
-			if err := openLocalPath(a, filepath.Join(logsDir(), e.LogFile)); err != nil {
+			if err := openLocalPath(a, filepath.Join(persist.LogsDir(), e.LogFile)); err != nil {
 				dialog.ShowError(err, hw)
 			}
 		}
@@ -246,7 +237,7 @@ func showHistoryWindow(a fyne.App, store *historyStore, onLoad func(historyEntry
 		}
 	})
 	folderBtn := widget.NewButtonWithIcon("Data folder", theme.FolderOpenIcon(), func() {
-		if err := openLocalPath(a, appDataDir()); err != nil {
+		if err := openLocalPath(a, persist.AppDataDir()); err != nil {
 			dialog.ShowError(err, hw)
 		}
 	})

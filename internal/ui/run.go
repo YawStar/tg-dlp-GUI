@@ -1,19 +1,14 @@
-package main
+package ui
 
 import (
 	"bufio"
 	"context"
-	_ "embed"
 	"encoding/json"
 	"fmt"
-	"io"
 	"image/color"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,760 +20,34 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	"tg-dlp_GUI/assets"
+	"tg-dlp_GUI/internal/persist"
+	"tg-dlp_GUI/internal/platform"
+	"tg-dlp_GUI/internal/progress"
+	"tg-dlp_GUI/internal/tgdlp"
 )
 
-// ============================================================
-// Global Variables
-// ============================================================
-
 var exePathGlobal string
-
-// ptySession is a running tg-dlp process attached to a pseudo terminal.
-// Implemented per-OS in platform_windows.go (ConPTY) and platform_unix.go (creack/pty).
-type ptySession interface {
-	io.Reader
-	Write(p []byte) (int, error)
-	Wait() (int, error) // blocks until the process exits, returns exit code
-	Interrupt()         // graceful stop (Ctrl+C / SIGINT)
-	Kill()              // force kill (whole process tree)
-	Close() error
-}
-
-// ============================================================
-// Progress Structure
-// ============================================================
-
-type dlProgress struct {
-	HasPercent bool
-	Percent    float64
-	PctText    string
-
-	SizeText  string
-	SpeedText string
-	ETAText   string
-
-	FileName string
-}
 
 type pendEntry struct {
 	key  string
 	text string
 }
 
-// ============================================================
-// Regular Expressions
-// ============================================================
+// Run builds the main window and blocks until the application quits.
 
-var (
-	ansiRegex = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
-	// OSC sequences (e.g. window title: ESC ] 0 ; title BEL)
-	oscRegex  = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?`)
-	ctrlRegex = regexp.MustCompile(`[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]`)
-	pctRegex  = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*%`)
-
-	rateRegex  = regexp.MustCompile(`([\d.]+)\s*([KMGT]?i?B)/s`)
-	filesRegex = regexp.MustCompile(`(\d+)\s*/\s*(\d+)\s*files`)
-)
-
-// ============================================================
-// Custom SVG Icons
-// ============================================================
-
-const (
-	sunSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>`
-
-	moonSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`
-
-	githubSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>`
-
-	infoSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><title>info</title><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>`
-
-	downloadSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>`
-
-	stopSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M4.929 4.929 19.07 19.071"/></svg>`
-
-	settingsSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-settings preview-icon"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>`
-
-	heartSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"/></svg>`
-
-	// ---- action button icons (Lucide), one per command ----
-	// (infoSVG above is the top-bar icon, so the Info command uses actInfoSVG)
-	actUploadSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>`
-
-	actExportSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-summary preview-icon"><path d="M15 4H7"/><path d="m18 16 3 3-3 3"/><path d="M3 4v13a2 2 0 0 0 2 2h16"/><path d="M7 14h7"/><path d="M7 9h12"/></svg>`
-
-	actBackupSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-refresh-ccw preview-icon"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>`
-
-	actRestoreSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-refresh-cw preview-icon"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>`
-
-	actInfoSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-message-square-exclamation-point preview-icon"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/><path d="M12 15h.01"/><path d="M12 7v4"/></svg>`
-
-	actDeleteSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash preview-icon"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`
-
-	actPurgeSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 22-1-4"/><path d="M19 14a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2h-3a1 1 0 0 1-1-1V4a2 2 0 0 0-4 0v5a1 1 0 0 1-1 1H6a2 2 0 0 0-2 2v1a1 1 0 0 0 1 1"/><path d="M19 14H5l-1.973 6.767A1 1 0 0 0 4 22h16a1 1 0 0 0 .973-1.233z"/><path d="m8 22 1-4"/></svg>`
-
-	// ---- Settings & Accounts dialog button icons ----
-	accountsSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-user-round-cog preview-icon"><path d="m14.305 19.53.923-.382"/><path d="m15.228 16.852-.923-.383"/><path d="m16.852 15.228-.383-.923"/><path d="m16.852 20.772-.383.924"/><path d="m19.148 15.228.383-.923"/><path d="m19.53 21.696-.382-.924"/><path d="M2 21a8 8 0 0 1 10.434-7.62"/><path d="m20.772 16.852.924-.383"/><path d="m20.772 19.148.924.383"/><circle cx="10" cy="8" r="5"/><circle cx="18" cy="18" r="3"/></svg>`
-
-	whoamiSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-user-round preview-icon"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>`
-
-	clearCacheSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>`
-
-	logoutSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-log-out preview-icon"><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/></svg>`
-
-	versionSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2H2v10l9.29 9.29c.94.94 2.48.94 3.42 0l6.58-6.58c.94-.94.94-2.48 0-3.42L12 2Z"/><path d="M7 7h.01"/></svg>`
-
-	updateSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>`
-)
-
-type iconSet struct {
-	sun      fyne.Resource
-	moon     fyne.Resource
-	github   fyne.Resource
-	info     fyne.Resource
-	settings fyne.Resource
-	heart    fyne.Resource
-}
-
-func svgIconResource(name string, svgXML string, dark bool) fyne.Resource {
-	colorHex := "#111827"
-	if dark {
-		colorHex = "#FFFFFF"
-	}
-	themedSVG := strings.ReplaceAll(strings.TrimSpace(svgXML), "currentColor", colorHex)
-	return fyne.NewStaticResource(name+"_"+colorHex[1:], []byte(themedSVG))
-}
-
-func buildIconSet(dark bool) iconSet {
-	return iconSet{
-		sun:      svgIconResource("sun.svg", sunSVG, dark),
-		moon:     svgIconResource("moon.svg", moonSVG, dark),
-		github:   svgIconResource("github.svg", githubSVG, dark),
-		info:     svgIconResource("info.svg", infoSVG, dark),
-		settings: svgIconResource("settings.svg", settingsSVG, dark),
-		heart:    svgIconResource("heart.svg", heartSVG, dark),
-	}
-}
-
-// ============================================================
-// Utility Functions
-// ============================================================
-
-func parseRateBytes(s string) float64 {
-	m := rateRegex.FindStringSubmatch(s)
-	if len(m) < 3 {
-		return 0
-	}
-	v, err := strconv.ParseFloat(m[1], 64)
-	if err != nil {
-		return 0
-	}
-	mult := map[string]float64{
-		"B": 1, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12,
-		"KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40,
-	}
-	return v * mult[m[2]]
-}
-
-func formatRate(b float64) string {
-	units := []string{"B/s", "KiB/s", "MiB/s", "GiB/s"}
-	i := 0
-	for b >= 1024 && i < len(units)-1 {
-		b /= 1024
-		i++
-	}
-	if i == 0 {
-		return fmt.Sprintf("%.0f %s", b, units[i])
-	}
-	return fmt.Sprintf("%.2f %s", b, units[i])
-}
-
-func formatDuration(secs int) string {
-	if secs < 0 {
-		secs = 0
-	}
-	h, m, sec := secs/3600, (secs%3600)/60, secs%60
-	switch {
-	case h > 0:
-		return fmt.Sprintf("%dh %dm", h, m)
-	case m > 0:
-		return fmt.Sprintf("%dm %ds", m, sec)
-	default:
-		return fmt.Sprintf("%ds", sec)
-	}
-}
-
-func stripANSI(s string) string {
-	s = oscRegex.ReplaceAllString(s, "")
-	s = ansiRegex.ReplaceAllString(s, "")
-	return ctrlRegex.ReplaceAllString(s, "")
-}
-
-func splitCustomArgs(input string) []string {
-	var args []string
-	var current strings.Builder
-	var quoteChar rune
-	escaped := false
-
-	for _, r := range input {
-		if escaped {
-			current.WriteRune(r)
-			escaped = false
-			continue
-		}
-
-		if r == '\\' {
-			escaped = true
-			continue
-		}
-
-		if quoteChar != 0 {
-			if r == quoteChar {
-				quoteChar = 0
-			} else {
-				current.WriteRune(r)
-			}
-			continue
-		}
-
-		if r == '"' || r == '\'' {
-			quoteChar = r
-			continue
-		}
-
-		if r == ' ' || r == '\t' {
-			if current.Len() > 0 {
-				args = append(args, current.String())
-				current.Reset()
-			}
-			continue
-		}
-
-		current.WriteRune(r)
-	}
-
-	if current.Len() > 0 {
-		args = append(args, current.String())
-	}
-
-	return args
-}
-
-// ============================================================
-// Progress Parser
-// ============================================================
-
-func parseProgressLine(line string) dlProgress {
-	var p dlProgress
-
-	trimmed := strings.TrimSpace(stripANSI(line))
-	if trimmed == "" {
-		return p
-	}
-
-	if m := pctRegex.FindStringSubmatch(trimmed); len(m) >= 2 {
-		val, err := strconv.ParseFloat(m[1], 64)
-		if err == nil {
-			if val < 0 {
-				val = 0
-			}
-			if val > 100 {
-				val = 100
-			}
-			p.HasPercent = true
-			p.Percent = val / 100.0
-			p.PctText = m[1] + "%"
-		}
-	}
-
-	parts := strings.Split(trimmed, "|")
-	if len(parts) >= 2 {
-		p.SizeText = strings.TrimSpace(parts[1])
-	}
-	if len(parts) >= 3 {
-		p.SpeedText = strings.TrimSpace(parts[2])
-	}
-	if len(parts) >= 4 {
-		etaRaw := strings.TrimSpace(parts[3])
-		etaRaw = strings.TrimSpace(strings.TrimPrefix(etaRaw, "ETA:"))
-		etaRaw = strings.TrimSpace(strings.TrimPrefix(etaRaw, "ETA"))
-		p.ETAText = etaRaw
-	}
-
-	if strings.HasPrefix(trimmed, "Total") {
-		if len(parts) >= 2 {
-			p.SizeText = strings.TrimSpace(parts[1])
-		}
-		p.SpeedText = ""
-		p.ETAText = ""
-		return p
-	}
-
-	if strings.HasPrefix(trimmed, "File:") {
-		p.FileName = strings.TrimSpace(strings.TrimPrefix(parts[0], "File:"))
-		if len(parts) >= 2 {
-			p.SizeText = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(parts[1]), "Size:"))
-		}
-	} else if idx := strings.Index(trimmed, "Downloaded:"); idx != -1 {
-		after := strings.TrimSpace(trimmed[idx+len("Downloaded:"):])
-		if cutIdx := strings.Index(after, " (in "); cutIdx != -1 {
-			after = strings.TrimSpace(after[:cutIdx])
-		}
-		if after != "" {
-			p.FileName = after
-		}
-	} else if idx := strings.Index(trimmed, "Downloading:"); idx != -1 {
-		after := strings.TrimSpace(trimmed[idx+len("Downloading:"):])
-		if after != "" {
-			p.FileName = after
-		}
-	}
-
-	return p
-}
-
-// ============================================================
-// CR / LF Scanner
-// ============================================================
-
-func scanCRorLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if atEOF && len(data) == 0 {
-		return 0, nil, nil
-	}
-
-	for i := 0; i < len(data); i++ {
-		if data[i] == '\n' || data[i] == '\r' {
-			return i + 1, data[:i], nil
-		}
-	}
-
-	if atEOF {
-		return len(data), data, nil
-	}
-
-	return 0, nil, nil
-}
-
-// ============================================================
-// Windows Command Line Quoting & Builder
-// ============================================================
-
-func quoteWindowsArg(arg string) string {
-	if arg != "" && !strings.ContainsAny(arg, " \t\n\v\"") {
-		return arg
-	}
-
-	var b strings.Builder
-	b.WriteByte('"')
-	backslashes := 0
-
-	for _, r := range arg {
-		switch r {
-		case '\\':
-			backslashes++
-		case '"':
-			for i := 0; i < backslashes*2+1; i++ {
-				b.WriteByte('\\')
-			}
-			b.WriteRune('"')
-			backslashes = 0
-		default:
-			for i := 0; i < backslashes; i++ {
-				b.WriteByte('\\')
-			}
-			backslashes = 0
-			b.WriteRune(r)
-		}
-	}
-
-	for i := 0; i < backslashes*2; i++ {
-		b.WriteByte('\\')
-	}
-	b.WriteByte('"')
-	return b.String()
-}
-
-func buildCommandLine(exePath string, args []string) string {
-	parts := make([]string, 0, len(args)+1)
-	parts = append(parts, quoteWindowsArg(exePath))
-	for _, arg := range args {
-		parts = append(parts, quoteWindowsArg(arg))
-	}
-	return strings.Join(parts, " ")
-}
-
-// ============================================================
-// Resolve tg-dlp Executable
-// ============================================================
-
-func tgDlpNames() []string {
-	if runtime.GOOS == "windows" {
-		return []string{"tg-dlp.exe", "tg-dlp"}
-	}
-	return []string{"tg-dlp"}
-}
-
-func resolveTgDlpPath() (string, error) {
-	names := tgDlpNames()
-	for _, n := range names {
-		if p, err := exec.LookPath(n); err == nil {
-			return filepath.Abs(p)
-		}
-	}
-
-	var dirs []string
-	if exe, err := os.Executable(); err == nil {
-		dirs = append(dirs, filepath.Dir(exe))
-	}
-	if cwd, err := os.Getwd(); err == nil {
-		dirs = append(dirs, cwd)
-	}
-	for _, d := range dirs {
-		for _, n := range names {
-			c := filepath.Join(d, n)
-			if info, err := os.Stat(c); err == nil && !info.IsDir() {
-				return c, nil
-			}
-		}
-	}
-
-	return "", fmt.Errorf("tg-dlp not found in PATH or application directory")
-}
-
-// ============================================================
-// Account Status Checker (whoami)
-// ============================================================
-
-func checkWhoAmI(exePath string, proxyURL string, noProxy bool) (string, bool) {
-	var args []string
-	if proxyURL != "" {
-		args = append(args, "--proxy", proxyURL)
-	} else if noProxy {
-		args = append(args, "--no-proxy")
-	}
-	args = append(args, "whoami")
-
-	cmd := exec.Command(exePath, args...)
-	hideConsole(cmd) // no flashing console window on Windows
-	output, err := cmd.CombinedOutput()
-	outStr := strings.TrimSpace(stripANSI(string(output)))
-	lowerOut := strings.ToLower(outStr)
-
-	if outStr == "" || err != nil {
-		return outStr, false
-	}
-
-	noAccountKeywords := []string{
-		"no account",
-		"not logged in",
-		"no session",
-		"please login",
-		"unauthorized",
-		"failed to load",
-		"not authenticated",
-	}
-	for _, kw := range noAccountKeywords {
-		if strings.Contains(lowerOut, kw) {
-			return outStr, false
-		}
-	}
-
-	return outStr, true
-}
-
-func runCommandWithPopup(
-	w fyne.Window,
-	title string,
-	args []string,
-	proxyURL string,
-	noProxy bool,
-	appendLog func(string),
-) {
-	go func() {
-		exePath, err := resolveTgDlpPath()
-		if err != nil {
-			fyne.Do(func() {
-				showTgDlpNotFoundDialog(w)
-			})
-			return
-		}
-		exePathGlobal = exePath
-
-		var fullArgs []string
-		if proxyURL != "" {
-			fullArgs = append(fullArgs, "--proxy", proxyURL)
-		} else if noProxy {
-			fullArgs = append(fullArgs, "--no-proxy")
-		}
-		fullArgs = append(fullArgs, args...)
-
-		cmd := exec.Command(exePath, fullArgs...)
-		hideConsole(cmd)
-		output, err := cmd.CombinedOutput()
-		outStr := strings.TrimSpace(stripANSI(string(output)))
-
-		fyne.Do(func() {
-			if outStr != "" && appendLog != nil {
-				appendLog(outStr)
-			}
-			if err != nil && outStr == "" {
-				dialog.ShowError(fmt.Errorf("Failed to run %s:\n%v", title, err), w)
-				return
-			}
-			if outStr == "" {
-				outStr = "No output returned."
-			}
-			dialog.ShowInformation(title, outStr, w)
-		})
-	}()
-}
-
-// ============================================================
-// Helper UI Builders
-// ============================================================
-
-func makeClearableEntry(entry *widget.Entry) fyne.CanvasObject {
-	var clearBtn *widget.Button
-	clearBtn = widget.NewButton("×", func() {
-		entry.SetText("")
-		entry.FocusGained()
-	})
-	clearBtn.Importance = widget.LowImportance
-
-	updateClearVisibility := func(s string) {
-		if strings.TrimSpace(s) == "" {
-			clearBtn.Hide()
-		} else {
-			clearBtn.Show()
-		}
-	}
-
-	entry.OnChanged = func(s string) {
-		updateClearVisibility(s)
-	}
-	updateClearVisibility(entry.Text)
-
-	rightOverlay := container.NewBorder(nil, nil, nil, clearBtn, layout.NewSpacer())
-	return container.NewStack(entry, rightOverlay)
-}
-
-type compactVBoxLayout struct {
-	gap float32
-}
-
-func (c *compactVBoxLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
-	var w, h float32
-	visibleCount := 0
-	for _, o := range objects {
-		if !o.Visible() {
-			continue
-		}
-		m := o.MinSize()
-		if m.Width > w {
-			w = m.Width
-		}
-		h += m.Height
-		visibleCount++
-	}
-	if visibleCount > 1 {
-		h += c.gap * float32(visibleCount-1)
-	}
-	return fyne.NewSize(w, h)
-}
-
-func (c *compactVBoxLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
-	var y float32
-	first := true
-	for _, o := range objects {
-		if !o.Visible() {
-			continue
-		}
-		if !first {
-			y += c.gap
-		}
-		first = false
-		m := o.MinSize()
-		o.Move(fyne.NewPos(0, y))
-		o.Resize(fyne.NewSize(size.Width, m.Height))
-		y += m.Height
-	}
-}
-
-func newCompactVBox(gap float32, objects ...fyne.CanvasObject) *fyne.Container {
-	return container.New(&compactVBoxLayout{gap: gap}, objects...)
-}
-
-type hoverBox struct {
-	widget.BaseWidget
-	btn      *widget.Button
-	onTap    func()
-	onChange func(hovered bool)
-	hovered  bool
-}
-
-func newHoverBox(btn *widget.Button, onChange func(hovered bool)) *hoverBox {
-	h := &hoverBox{
-		btn:      btn,
-		onChange: onChange,
-	}
-	h.ExtendBaseWidget(h)
-	return h
-}
-
-func (h *hoverBox) CreateRenderer() fyne.WidgetRenderer {
-	rect := canvas.NewRectangle(color.Transparent)
-	return widget.NewSimpleRenderer(rect)
-}
-
-func (h *hoverBox) Cursor() desktop.Cursor {
-	if h.hovered && (h.btn == nil || !h.btn.Disabled()) {
-		return desktop.PointerCursor
-	}
-	return desktop.DefaultCursor
-}
-
-func (h *hoverBox) MouseIn(_ *desktop.MouseEvent) {
-	h.hovered = true
-	if h.onChange != nil {
-		h.onChange(true)
-	}
-}
-
-func (h *hoverBox) MouseMoved(_ *desktop.MouseEvent) {
-	if !h.hovered {
-		h.hovered = true
-		if h.onChange != nil {
-			h.onChange(true)
-		}
-	}
-}
-
-func (h *hoverBox) MouseOut() {
-	h.hovered = false
-	if h.onChange != nil {
-		h.onChange(false)
-	}
-}
-
-func (h *hoverBox) Tapped(ev *fyne.PointEvent) {
-	if h.btn != nil && !h.btn.Disabled() {
-		h.btn.Tapped(ev)
-		return
-	}
-	if h.onTap != nil {
-		h.onTap()
-	}
-}
-
-// ============================================================
-// Terminal Interactive Runner (Login / Accounts Management)
-// ============================================================
-
-func runInteractiveInTerminal(
-	w fyne.Window,
-	args []string,
-	onFinished func(),
-) {
-	go func() {
-		exePath, err := resolveTgDlpPath()
-		if err != nil {
-			fyne.Do(func() {
-				showTgDlpNotFoundDialog(w)
-				if onFinished != nil {
-					onFinished()
-				}
-			})
-			return
-		}
-		exePathGlobal = exePath
-
-		if err := runInTerminal(exePath, args); err != nil {
-			fyne.Do(func() {
-				dialog.ShowError(fmt.Errorf("Failed to open terminal:\n%v", err), w)
-				if onFinished != nil {
-					onFinished()
-				}
-			})
-			return
-		}
-
-		time.Sleep(500 * time.Millisecond)
-
-		if onFinished != nil {
-			fyne.Do(onFinished)
-		}
-	}()
-}
-
-//go:embed assets/app-icon.png
-var appIconBytes []byte
-
-// ============================================================
-// "tg-dlp not found" dialog (download link + Windows install command)
-// ============================================================
-
-const (
-	tgDlpReleasesURL = "https://github.com/YawStar/tg-dlp/releases/latest"
-	tgDlpInstallPS   = "irm https://raw.githubusercontent.com/YawStar/tg-dlp/main/install.ps1 | iex"
-)
-
-var notFoundDialogOpen atomic.Bool
-
-// showTgDlpNotFoundDialog tells the user tg-dlp is missing and how to get it.
-// Must be called on the UI thread (inside fyne.Do when called from a goroutine).
-func showTgDlpNotFoundDialog(w fyne.Window) {
-	// Several startup checks can fail at once; show only one dialog.
-	if !notFoundDialogOpen.CompareAndSwap(false, true) {
-		return
-	}
-
-	msg := widget.NewLabel("tg-dlp was not found in PATH or in the application folder.\nInstall it, then restart this app.")
-	msg.Wrapping = fyne.TextWrapWord
-
-	items := []fyne.CanvasObject{msg}
-
-	if u, err := url.Parse(tgDlpReleasesURL); err == nil {
-		items = append(items, widget.NewHyperlink("Download tg-dlp (GitHub Releases)", u))
-	}
-
-	if runtime.GOOS == "windows" {
-		psLbl := widget.NewLabel("Or run this in PowerShell:")
-		psEntry := widget.NewEntry()
-		psEntry.SetText(tgDlpInstallPS)
-		// keep it selectable/copyable but not editable
-		psEntry.OnChanged = func(t string) {
-			if t != tgDlpInstallPS {
-				psEntry.SetText(tgDlpInstallPS)
-			}
-		}
-		copyBtn := widget.NewButtonWithIcon("Copy command", theme.ContentCopyIcon(), func() {
-			w.Clipboard().SetContent(tgDlpInstallPS)
-		})
-		items = append(items, psLbl, psEntry, copyBtn)
-	}
-
-	d := dialog.NewCustom("tg-dlp not found", "OK", container.NewVBox(items...), w)
-	d.SetOnClosed(func() { notFoundDialogOpen.Store(false) })
-	d.Resize(fyne.NewSize(600, 260))
-	d.Show()
-}
-
-// ============================================================
-// Main
-// ============================================================
-
-func main() {
+func Run() {
 	a := app.New()
 	w := a.NewWindow("tg-dlp GUI (Fyne)")
 
 	// Last used configuration + task history (stored in the user's config dir)
-	cfg, haveCfg := loadConfig()
-	historyDB := openHistory()
+	cfg, haveCfg := persist.LoadConfig()
+	historyDB := persist.OpenHistory()
 
 	if cfg.WinW >= 600 && cfg.WinH >= 450 {
 		w.Resize(fyne.NewSize(cfg.WinW, cfg.WinH))
@@ -786,8 +55,8 @@ func main() {
 		w.Resize(fyne.NewSize(820, 650))
 	}
 
-	if len(appIconBytes) > 0 {
-		w.SetIcon(fyne.NewStaticResource("app-icon.png", appIconBytes))
+	if len(assets.AppIcon) > 0 {
+		w.SetIcon(fyne.NewStaticResource("app-icon.png", assets.AppIcon))
 	}
 
 	// --------------------------------------------------------
@@ -1033,8 +302,8 @@ func main() {
 		pendMu     sync.Mutex
 		pendLog    []pendEntry
 		pendIdx    map[string]int
-		pendTotal  *dlProgress
-		pendItem   dlProgress
+		pendTotal  *progress.Progress
+		pendItem   progress.Progress
 		pendStatus string
 		pendDirty  bool
 		logLines   []string // protected by logMu
@@ -1087,11 +356,11 @@ func main() {
 			sizeLabel.SetText("Size: -")
 			fileLabel.SetText("File: -")
 			statusLabel.SetText("Starting...")
-			clearTaskbarProgress(w)
+			platform.ClearTaskbarProgress(w)
 		})
 	}
 
-	updateProgress := func(prog dlProgress, isTotal bool) {
+	updateProgress := func(prog progress.Progress, isTotal bool) {
 		if isTotal {
 			if prog.HasPercent {
 				barText = prog.PctText
@@ -1106,7 +375,7 @@ func main() {
 				if !stopping.Load() {
 					statusLabel.SetText(fmt.Sprintf("Running (%s)", prog.PctText))
 				}
-				setTaskbarProgress(w, prog.Percent)
+				platform.SetTaskbarProgress(w, prog.Percent)
 			}
 			if prog.SizeText != "" {
 				sizeLabel.SetText("Size: " + prog.SizeText)
@@ -1127,11 +396,11 @@ func main() {
 	}
 
 	appendLogAndStats := func(line string) {
-		clean := strings.TrimSpace(stripANSI(line))
+		clean := strings.TrimSpace(progress.StripANSI(line))
 		if clean == "" {
 			return
 		}
-		prog := parseProgressLine(clean)
+		prog := progress.ParseLine(clean)
 		isTotal := strings.HasPrefix(clean, "Total")
 		// single-file mode prints a bare bar line (no file name, no "Total")
 		isBar := !isTotal && prog.HasPercent && strings.HasPrefix(clean, "[")
@@ -1149,10 +418,10 @@ func main() {
 		// history: keep the result summary, and write everything except
 		// progress redraws to this task's log file (passwords masked)
 		if (isTotal || drivesBar) && prog.SizeText != "" {
-			histSummary.Store(prog.SizeText)
+			persist.HistSummary.Store(prog.SizeText)
 		}
 		if !prog.HasPercent {
-			taskLog.Load().Line(redactURLPassword(clean))
+			persist.TaskLog.Load().Line(persist.RedactURLPassword(clean))
 		}
 
 		pendMu.Lock()
@@ -1183,7 +452,7 @@ func main() {
 		if isTotal {
 			p := prog
 			pendTotal = &p
-			if m := filesRegex.FindStringSubmatch(prog.SizeText); len(m) == 3 {
+			if m := progress.FilesRegex.FindStringSubmatch(prog.SizeText); len(m) == 3 {
 				done, _ := strconv.Atoi(m[1])
 				total, _ := strconv.Atoi(m[2])
 				now := time.Now()
@@ -1192,7 +461,7 @@ func main() {
 					firstTotalDone = done
 				} else if el := now.Sub(firstTotalAt).Seconds(); el >= 5 && done > firstTotalDone {
 					rate := float64(done-firstTotalDone) / el
-					aggETA = "~" + formatDuration(int(float64(total-done)/rate))
+					aggETA = "~" + progress.FormatDuration(int(float64(total-done)/rate))
 				}
 			}
 		} else {
@@ -1204,7 +473,7 @@ func main() {
 				if prog.Percent >= 1.0 {
 					delete(activeSpeed, key)
 				} else {
-					activeSpeed[key] = parseRateBytes(prog.SpeedText)
+					activeSpeed[key] = progress.ParseRateBytes(prog.SpeedText)
 				}
 			}
 			if strings.Contains(clean, "Downloaded:") && prog.FileName != "" {
@@ -1247,7 +516,7 @@ func main() {
 				continue
 			}
 			lines, total, item, status := pendLog, pendTotal, pendItem, pendStatus
-			pendLog, pendTotal, pendItem, pendStatus, pendDirty = nil, nil, dlProgress{}, "", false
+			pendLog, pendTotal, pendItem, pendStatus, pendDirty = nil, nil, progress.Progress{}, "", false
 			pendIdx = nil
 			aggSpeedText, aggETAText := "", ""
 			if sawTotal.Load() {
@@ -1255,7 +524,7 @@ func main() {
 				for _, v := range activeSpeed {
 					sum += v
 				}
-				aggSpeedText = formatRate(sum)
+				aggSpeedText = progress.FormatRate(sum)
 				aggETAText = aggETA
 			}
 			pendMu.Unlock()
@@ -1308,12 +577,12 @@ func main() {
 	// --------------------------------------------------------
 
 	var (
-		actionBtn   *widget.Button
-		actionView  fyne.CanvasObject
-		btnBg       *canvas.Rectangle
-		btnLabel    *canvas.Text
-		btnIcon     *canvas.Image
-		isHovered   bool
+		actionBtn  *widget.Button
+		actionView fyne.CanvasObject
+		btnBg      *canvas.Rectangle
+		btnLabel   *canvas.Text
+		btnIcon    *canvas.Image
+		isHovered  bool
 	)
 
 	// one icon per action label (see getActionLabel); the icon is always white on the coloured button
@@ -1626,8 +895,8 @@ func main() {
 		"media":     purgeMediaCheck,
 	}
 
-	captureProfile := func() formProfile {
-		p := formProfile{
+	captureProfile := func() persist.FormProfile {
+		p := persist.FormProfile{
 			Primary:     primaryEntry.Text,
 			Secondary:   secondaryEntry.Text,
 			Tertiary:    tertiaryEntry.Text,
@@ -1643,7 +912,7 @@ func main() {
 		return p
 	}
 
-	applyProfile := func(p formProfile) {
+	applyProfile := func(p persist.FormProfile) {
 		primaryEntry.SetText(p.Primary)
 		secondaryEntry.SetText(p.Secondary)
 		tertiaryEntry.SetText(p.Tertiary)
@@ -1674,7 +943,7 @@ func main() {
 		curCmd = sel
 	}
 
-	loadFromHistory := func(e historyEntry) {
+	loadFromHistory := func(e persist.HistoryEntry) {
 		if commandSelect.Selected != e.Command {
 			commandSelect.SetSelected(e.Command)
 		}
@@ -1685,9 +954,9 @@ func main() {
 		w.RequestFocus()
 	}
 
-	snapshotConfig := func() appConfig {
+	snapshotConfig := func() persist.AppConfig {
 		profiles[curCmd] = captureProfile()
-		c := appConfig{
+		c := persist.AppConfig{
 			Command: commandSelect.Selected,
 			Theme:   "dark",
 			Proxy:   proxyEntry.Text,
@@ -1742,8 +1011,8 @@ func main() {
 
 		resetStats()
 
-		exePath, err := resolveTgDlpPath()
-		// fmt.Println("[cmd] " + buildCommandLine(exePath, redactArgs(args)))
+		exePath, err := tgdlp.ResolvePath()
+		// fmt.Println("[cmd] " + platform.BuildCommandLine(exePath, persist.RedactArgs(args)))
 
 		if err != nil {
 			mu.Lock()
@@ -1753,7 +1022,7 @@ func main() {
 			appendLogAndStats("[!] Error: " + err.Error())
 			fyne.Do(func() {
 				statusLabel.SetText("tg-dlp not found")
-				setTaskbarError(w)
+				platform.SetTaskbarError(w)
 				setActionState(getActionLabel(commandSelect.Selected, false), hasLogin)
 				showTgDlpNotFoundDialog(w)
 			})
@@ -1770,29 +1039,29 @@ func main() {
 				break
 			}
 		}
-		taskLog.Store(nil)
+		persist.TaskLog.Store(nil)
 		hForm := captureProfile()
-		hEntry := historyEntry{
-			ID:      time.Now().Format("20060102-150405.000") + "-" + cmdShortName(taskTitle),
+		hEntry := persist.HistoryEntry{
+			ID:      time.Now().Format("20060102-150405.000") + "-" + persist.CmdShortName(taskTitle),
 			Command: taskTitle,
 			Target:  strings.TrimSpace(primaryEntry.Text),
-			CmdLine: buildCommandLine("tg-dlp", redactArgs(args)),
+			CmdLine: platform.BuildCommandLine("tg-dlp", persist.RedactArgs(args)),
 			Started: time.Now(),
 			Status:  "running",
 			Form:    &hForm,
 		}
 		hEntry.LogFile = hEntry.ID + ".log"
-		var hLog *taskLogger
+		var hLog *persist.TaskLogger
 		if recordHistory {
 			historyDB.Add(hEntry)
-			hLog = newTaskLogger(filepath.Join(logsDir(), hEntry.LogFile))
-			taskLog.Store(hLog)
+			hLog = persist.NewTaskLogger(filepath.Join(persist.LogsDir(), hEntry.LogFile))
+			persist.TaskLog.Store(hLog)
 		}
-		histSummary.Store("")
+		persist.HistSummary.Store("")
 		var hOnce sync.Once
 		finishHistory := func(status string, code int) {
 			hOnce.Do(func() {
-				taskLog.Store(nil)
+				persist.TaskLog.Store(nil)
 				if !recordHistory {
 					return
 				}
@@ -1801,7 +1070,7 @@ func main() {
 				e.Ended = time.Now()
 				e.Status = status
 				e.ExitCode = code
-				e.Summary, _ = histSummary.Load().(string)
+				e.Summary, _ = persist.HistSummary.Load().(string)
 				historyDB.Update(e)
 			})
 		}
@@ -1819,15 +1088,15 @@ func main() {
 			progressBar.Hide()
 			infiniteBar.Show()
 			infiniteBar.Start()
-			setTaskbarIndeterminate(w)
+			platform.SetTaskbarIndeterminate(w)
 			statusLabel.SetText("Starting " + taskTitle + "...")
 		})
 
 		go func() {
-			appendLogAndStats("[cmd] " + buildCommandLine(exePath, redactArgs(args)))
+			appendLogAndStats("[cmd] " + platform.BuildCommandLine(exePath, persist.RedactArgs(args)))
 			appendLogAndStats("[info] Starting pseudo terminal...")
 
-			pty, err := startPTY(exePath, args)
+			pty, err := platform.StartPTY(exePath, args)
 			if err != nil {
 				appendLogAndStats("[error] ConPTY start failed: " + err.Error())
 				finishHistory("failed", -1)
@@ -1839,7 +1108,7 @@ func main() {
 					statusLabel.SetText("Unable to start tg-dlp")
 					infiniteBar.Stop()
 					infiniteBar.Hide()
-					setTaskbarError(w)
+					platform.SetTaskbarError(w)
 					setActionState(getActionLabel(commandSelect.Selected, false), hasLogin)
 				})
 				return
@@ -1910,12 +1179,12 @@ func main() {
 				defer close(scanDone)
 				scanner := bufio.NewScanner(pty)
 				scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-				scanner.Split(scanCRorLF)
+				scanner.Split(progress.ScanCRorLF)
 				for scanner.Scan() {
 					line := string(scanner.Bytes())
 					appendLogAndStats(line)
 					if captureInfo {
-						if clean := strings.TrimSpace(stripANSI(line)); clean != "" {
+						if clean := strings.TrimSpace(progress.StripANSI(line)); clean != "" {
 							captured = append(captured, clean)
 						}
 					}
@@ -1943,21 +1212,21 @@ func main() {
 				appendLogAndStats("[cancelled] Task stopped by user.")
 				fyne.Do(func() {
 					statusLabel.SetText(taskTitle + " cancelled")
-					clearTaskbarProgress(w)
+					platform.ClearTaskbarProgress(w)
 				})
 				notifyDone("tg-dlp GUI", taskTitle+" cancelled.")
 			} else if waitErr != nil {
 				appendLogAndStats("[error] " + waitErr.Error())
 				fyne.Do(func() {
 					statusLabel.SetText(taskTitle + " failed")
-					setTaskbarError(w)
+					platform.SetTaskbarError(w)
 				})
 				notifyDone("tg-dlp GUI", taskTitle+" failed.")
 			} else if exitCode != 0 {
 				appendLogAndStats(fmt.Sprintf("[error] tg-dlp exited with code %d", exitCode))
 				fyne.Do(func() {
 					statusLabel.SetText(taskTitle + " failed")
-					setTaskbarError(w)
+					platform.SetTaskbarError(w)
 				})
 				notifyDone("tg-dlp GUI", taskTitle+" failed.")
 			} else {
@@ -1967,7 +1236,7 @@ func main() {
 					pctLabel.SetText("100.0%")
 					etaLabel.SetText("ETA: 0s")
 					statusLabel.SetText(taskTitle + " finished")
-					clearTaskbarProgress(w)
+					platform.ClearTaskbarProgress(w)
 				})
 				appendLogAndStats("[done] All tasks completed!")
 				notifyDone("tg-dlp GUI", taskTitle+" finished!")
@@ -2195,7 +1464,7 @@ func main() {
 			args = append(args, "--debug")
 		}
 		if extraVal != "" {
-			args = append(args, splitCustomArgs(extraVal)...)
+			args = append(args, tgdlp.SplitCustomArgs(extraVal)...)
 		}
 
 		return args, taskName, nil
@@ -2319,7 +1588,7 @@ func main() {
 
 	refreshAccountStatus := func(showPopup bool) {
 		go func() {
-			exePath, err := resolveTgDlpPath()
+			exePath, err := tgdlp.ResolvePath()
 			if err != nil {
 				fyne.Do(func() {
 					statusLabel.SetText("tg-dlp not found")
@@ -2331,7 +1600,7 @@ func main() {
 			}
 			exePathGlobal = exePath
 
-			outStr, loggedIn := checkWhoAmI(exePath, strings.TrimSpace(proxyEntry.Text), noProxyCheck.Checked)
+			outStr, loggedIn := tgdlp.CheckWhoAmI(exePath, strings.TrimSpace(proxyEntry.Text), noProxyCheck.Checked)
 			mu.Lock()
 			hasLogin = loggedIn
 			running := cancel != nil
@@ -2433,7 +1702,7 @@ func main() {
 			}
 		}
 		openDataBtn := widget.NewButtonWithIcon("tg-dlp data folder", theme.FolderOpenIcon(), func() {
-			cfg, err := tgDlpConfigDir()
+			cfg, err := tgdlp.ConfigDir()
 			if err != nil {
 				showFolderErr(err)
 				return
@@ -2441,12 +1710,12 @@ func main() {
 			showFolderErr(openFolder(cfg))
 		})
 		openLogsBtn := widget.NewButtonWithIcon("GUI logs folder", theme.FolderOpenIcon(), func() {
-			showFolderErr(openFolder(logsDir()))
+			showFolderErr(openFolder(persist.LogsDir()))
 		})
 
 		// ---- tg-dlp ----
 		pathText := "tg-dlp not found"
-		if p, err := resolveTgDlpPath(); err == nil {
+		if p, err := tgdlp.ResolvePath(); err == nil {
 			pathText = p
 		}
 		pathLbl := widget.NewLabel("Using: " + pathText)
@@ -2662,7 +1931,7 @@ func main() {
 	go func() {
 		time.Sleep(400 * time.Millisecond)
 
-		exePath, err := resolveTgDlpPath()
+		exePath, err := tgdlp.ResolvePath()
 		if err != nil {
 			fyne.Do(func() {
 				statusLabel.SetText("tg-dlp not found")
@@ -2672,7 +1941,7 @@ func main() {
 		}
 		exePathGlobal = exePath
 
-		outStr, loggedIn := checkWhoAmI(exePath, startProxy, startNoProxy)
+		outStr, loggedIn := tgdlp.CheckWhoAmI(exePath, startProxy, startNoProxy)
 		mu.Lock()
 		hasLogin = loggedIn
 		mu.Unlock()
@@ -2708,7 +1977,7 @@ func main() {
 				if err != nil || string(b) == last {
 					return
 				}
-				if saveConfig(c) == nil {
+				if persist.SaveConfig(c) == nil {
 					last = string(b)
 				}
 			})
@@ -2716,7 +1985,7 @@ func main() {
 	}()
 
 	w.SetCloseIntercept(func() {
-		_ = saveConfig(snapshotConfig())
+		_ = persist.SaveConfig(snapshotConfig())
 		mu.Lock()
 		if cancel != nil {
 			cancel()

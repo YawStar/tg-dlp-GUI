@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package platform
 
 import (
 	"syscall"
@@ -35,8 +35,8 @@ var (
 	procCoInitializeEx   = ole32.NewProc("CoInitializeEx")
 	procCoCreateInstance = ole32.NewProc("CoCreateInstance")
 
-	user32           = syscall.NewLazyDLL("user32.dll")
-	procFindWindowW  = user32.NewProc("FindWindowW")
+	user32          = syscall.NewLazyDLL("user32.dll")
+	procFindWindowW = user32.NewProc("FindWindowW")
 )
 
 type iTaskbarList3Vtbl struct {
@@ -123,13 +123,13 @@ func withHWND(w fyne.Window, fn func(hwnd uintptr, tb *iTaskbarList3)) {
 	fn(hwnd, tb)
 }
 
-func setTaskbarIndeterminate(w fyne.Window) {
+func SetTaskbarIndeterminate(w fyne.Window) {
 	withHWND(w, func(hwnd uintptr, tb *iTaskbarList3) {
 		_, _, _ = syscall.SyscallN(tb.vtbl.SetProgressState, uintptr(unsafe.Pointer(tb)), hwnd, tbpIndeterminate)
 	})
 }
 
-func setTaskbarProgress(w fyne.Window, progress float64) {
+func SetTaskbarProgress(w fyne.Window, progress float64) {
 	if progress < 0 {
 		progress = 0
 	}
@@ -145,13 +145,13 @@ func setTaskbarProgress(w fyne.Window, progress float64) {
 	})
 }
 
-func setTaskbarError(w fyne.Window) {
+func SetTaskbarError(w fyne.Window) {
 	withHWND(w, func(hwnd uintptr, tb *iTaskbarList3) {
 		_, _, _ = syscall.SyscallN(tb.vtbl.SetProgressState, uintptr(unsafe.Pointer(tb)), hwnd, tbpError)
 	})
 }
 
-func clearTaskbarProgress(w fyne.Window) {
+func ClearTaskbarProgress(w fyne.Window) {
 	withHWND(w, func(hwnd uintptr, tb *iTaskbarList3) {
 		_, _, _ = syscall.SyscallN(tb.vtbl.SetProgressState, uintptr(unsafe.Pointer(tb)), hwnd, tbpNoProgress)
 	})

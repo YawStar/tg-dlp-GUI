@@ -1,4 +1,7 @@
-package main
+// Package tgauth implements the Telegram account side that the GUI does
+// natively (no tg-dlp process): QR login and session password handling.
+
+package tgauth
 
 import (
 	"context"
@@ -15,10 +18,11 @@ import (
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/telegram/auth/qrlogin"
 	"github.com/gotd/td/tg"
-
 	tdaccounts "tg-dlp/core/accounts"
 	tdclient "tg-dlp/core/client"
 	tdsession "tg-dlp/core/session"
+
+	"tg-dlp_GUI/internal/tgdlp"
 )
 
 // ============================================================
@@ -33,23 +37,23 @@ import (
 // ============================================================
 
 // How long the session password is remembered. 0 = until the session file is
-// deleted, qrCacheNever (-1) = ask every time, > 0 = seconds.
-const qrCacheNever = -1
+// deleted, CacheNever (-1) = ask every time, > 0 = seconds.
+const CacheNever = -1
 
-type qrStage int
+type LoginStage int
 
 const (
-	stageScan   qrStage = iota // waiting for the phone to scan the QR code
-	stageSaving                // scanned, finishing the login
+	StageScan   LoginStage = iota // waiting for the phone to scan the QR code
+	StageSaving                   // scanned, finishing the login
 )
 
-// qrLoginHooks connects the login to the GUI. Every hook is called from the
+// LoginHooks connects the login to the GUI. Every hook is called from the
 // login goroutine, never from the UI thread, so the GUI must use fyne.Do.
-type qrLoginHooks struct {
+type LoginHooks struct {
 	// ShowQR gets a new login link about every 30 seconds.
 	ShowQR func(url string)
 	// Stage tells which part of the flow is running.
-	Stage func(stage qrStage)
+	Stage func(stage LoginStage)
 	// Status is a short human readable progress message.
 	Status func(msg string)
 	// AskPassword asks for the Telegram two-step verification password. It
@@ -57,22 +61,13 @@ type qrLoginHooks struct {
 	AskPassword func(ctx context.Context, retry bool) (string, error)
 }
 
-type qrLoginParams struct {
+type LoginParams struct {
 	ConfigDir    string // ~/.tg-dlp
 	Profile      string // new profile name, already validated
 	Password     string // new session password
-	CacheSeconds int    // see qrCacheNever
+	CacheSeconds int    // see CacheNever
 	Proxy        string // "" = none given
 	NoProxy      bool
-}
-
-// tgDlpConfigDir is the folder tg-dlp keeps its data in (same rule as the CLI).
-func tgDlpConfigDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot find the user home directory: %w", err)
-	}
-	return filepath.Join(home, ".tg-dlp"), nil
 }
 
 func qrFileExists(path string) bool {
@@ -81,7 +76,7 @@ func qrFileExists(path string) bool {
 }
 
 // loadAPICredentials reads the API ID / hash tg-dlp saved in config.enc
-// (same file and same fixed password as tg-dlp/cmd/root.go loadConfig).
+// (same file and same fixed password as tg-dlp/cmd/root.go persist.LoadConfig).
 func loadAPICredentials(configDir string) (int, string, error) {
 	const configPassword = "tg-dlp"
 	path := filepath.Join(configDir, "config.enc")
@@ -91,7 +86,7 @@ func loadAPICredentials(configDir string) (int, string, error) {
 		// tg-dlp creates config.enc from its built-in credentials the first
 		// time it runs. "login" does that and then stops by itself because
 		// there is no terminal, so nothing is changed besides config.enc.
-		_, _ = runTgDlpHidden(20*time.Second, "login")
+		_, _ = tgdlp.RunHidden(20*time.Second, "login")
 		data, err = os.ReadFile(path)
 	}
 	if err != nil {
@@ -126,10 +121,10 @@ func cleanupFailedAccount(sessionPath string) {
 	_ = os.Remove(filepath.Dir(sessionPath)) // only succeeds when the folder is empty
 }
 
-// runQRLogin logs a new account in with a QR code, saves its encrypted
+// RunQRLogin logs a new account in with a QR code, saves its encrypted
 // session under profiles/<name>/ and makes it the active account.
 // It returns when the login is finished, failed or ctx is cancelled.
-func runQRLogin(ctx context.Context, p qrLoginParams, h qrLoginHooks) error {
+func RunQRLogin(ctx context.Context, p LoginParams, h LoginHooks) error {
 	status := func(msg string) {
 		if h.Status != nil {
 			h.Status(msg)
@@ -192,7 +187,7 @@ func runQRLogin(ctx context.Context, p qrLoginParams, h qrLoginHooks) error {
 
 	// "How long to remember the password": same effect as "tg-dlp config-cache".
 	switch {
-	case p.CacheSeconds == qrCacheNever:
+	case p.CacheSeconds == CacheNever:
 		tdsession.ClearPasswordCache(sessionPath)
 	case p.CacheSeconds == 0:
 		tdsession.SavePasswordToCache(sessionPath, p.Password, 100*365*24*time.Hour)
@@ -208,7 +203,7 @@ func runQRLogin(ctx context.Context, p qrLoginParams, h qrLoginHooks) error {
 }
 
 // guiQRAuth is loginWithQR from tg-dlp/cmd/login.go with GUI hooks.
-func guiQRAuth(ctx context.Context, cli *telegram.Client, dispatcher tg.UpdateDispatcher, h qrLoginHooks) error {
+func guiQRAuth(ctx context.Context, cli *telegram.Client, dispatcher tg.UpdateDispatcher, h LoginHooks) error {
 	loggedIn := qrlogin.OnLoginToken(dispatcher)
 
 	err := guiQRAuthWithRetry(ctx, cli.QR(), loggedIn, h)
@@ -246,7 +241,7 @@ func guiQRAuth(ctx context.Context, cli *telegram.Client, dispatcher tg.UpdateDi
 // guiQRAuthWithRetry is qrAuthWithRetry from tg-dlp/cmd/login.go: qr.Auth plus
 // a fresh-token retry when Telegram moves the account to another data centre
 // (AUTH_TOKEN_EXPIRED). The QR code does not have to be scanned again.
-func guiQRAuthWithRetry(ctx context.Context, qr qrlogin.QR, loggedIn qrlogin.LoggedIn, h qrLoginHooks) error {
+func guiQRAuthWithRetry(ctx context.Context, qr qrlogin.QR, loggedIn qrlogin.LoggedIn, h LoginHooks) error {
 	const importAttempts = 4
 
 	for {
@@ -258,7 +253,7 @@ func guiQRAuthWithRetry(ctx context.Context, qr qrlogin.QR, loggedIn qrlogin.Log
 			h.ShowQR(token.URL())
 		}
 		if h.Stage != nil {
-			h.Stage(stageScan)
+			h.Stage(StageScan)
 		}
 
 		wait := time.Until(token.Expires())
@@ -281,7 +276,7 @@ func guiQRAuthWithRetry(ctx context.Context, qr qrlogin.QR, loggedIn qrlogin.Log
 		}
 
 		if h.Stage != nil {
-			h.Stage(stageSaving)
+			h.Stage(StageSaving)
 		}
 		var lastErr error
 		for attempt := 1; attempt <= importAttempts; attempt++ {
@@ -308,9 +303,9 @@ func guiQRAuthWithRetry(ctx context.Context, qr qrlogin.QR, loggedIn qrlogin.Log
 
 var qrFloodRe = regexp.MustCompile(`FLOOD_(?:PREMIUM_)?WAIT[_\s(]*(\d+)`)
 
-// friendlyLoginError turns the common Telegram errors into plain sentences
+// FriendlyLoginError turns the common Telegram errors into plain sentences
 // (same cases as explainLoginError in tg-dlp/cmd/login.go, without emoji).
-func friendlyLoginError(err error) string {
+func FriendlyLoginError(err error) string {
 	s := err.Error()
 	switch {
 	case errors.Is(err, context.Canceled):

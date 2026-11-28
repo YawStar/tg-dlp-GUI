@@ -1,14 +1,9 @@
-package main
+package ui
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"os/exec"
-	"regexp"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -16,202 +11,17 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
+	"tg-dlp_GUI/internal/tgdlp"
 )
 
-// ============================================================
-// Talks to the tg-dlp CLI:
-//   list    tg-dlp accounts --list        (parsed)
-//   switch  tg-dlp switch <profile>
-//   rename  tg-dlp rename <profile> <new>
-//   remove  drives the interactive "tg-dlp accounts" menu inside a hidden pty
-//           ("-", <number>, "y"), so tg-dlp itself deletes the session
-//   add     see accounts_add.go (config-pw, config-cache, login --qr-url -> QR code in the GUI)
-// ============================================================
-
-type accountItem struct {
-	Index   int    // 1-based number as printed by "tg-dlp accounts"
-	Label   string // "Name (@username)"
-	Profile string // profile name ("default" for the unnamed one)
-	Current bool
-}
-
-// "  3. ● Name (@user)   [profile: work]  (current)"
-var accountLineRe = regexp.MustCompile(`^\s*(\d+)\.\s+(?:●\s+)?(.+?)\s+\[profile:\s*([^\]]*)\]\s*(\(current\))?\s*$`)
-
-var profileNameRe = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
-
-func parseAccounts(out string) []accountItem {
-	var items []accountItem
-	for _, line := range strings.Split(stripANSI(out), "\n") {
-		m := accountLineRe.FindStringSubmatch(strings.TrimRight(line, "\r"))
-		if m == nil {
-			continue
-		}
-		n, _ := strconv.Atoi(m[1])
-		items = append(items, accountItem{
-			Index:   n,
-			Label:   strings.TrimSpace(m[2]),
-			Profile: strings.TrimSpace(m[3]),
-			Current: m[4] != "",
-		})
-	}
-	return items
-}
-
-// runTgDlpHidden runs a non-interactive tg-dlp command without any console window.
-func runTgDlpHidden(timeout time.Duration, args ...string) (string, error) {
-	exe, err := resolveTgDlpPath()
-	if err != nil {
-		return "", err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, args...)
-	hideConsole(cmd)
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		err = errors.New("tg-dlp did not answer in time")
-	}
-	return strings.TrimSpace(stripANSI(string(out))), err
-}
-
-func listAccounts() ([]accountItem, error) {
-	out, err := runTgDlpHidden(20*time.Second, "accounts", "--list")
-	items := parseAccounts(out)
-	if err != nil && len(items) == 0 {
-		msg := cleanCLIText(out)
-		if msg == "" {
-			msg = err.Error()
-		}
-		return nil, errors.New(msg)
-	}
-	return items, nil
-}
-
-// cleanCLIText removes emoji (the UI font can't draw them), blank lines,
-// and keeps the last few lines.
-func cleanCLIText(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if r == 0xFE0F || r == 0x200D ||
-			(r >= 0x1F000 && r <= 0x1FFFF) || (r >= 0x2600 && r <= 0x27BF) || (r >= 0x2B00 && r <= 0x2BFF) {
-			continue
-		}
-		b.WriteRune(r)
-	}
-	var lines []string
-	for _, ln := range strings.Split(b.String(), "\n") {
-		if ln = strings.TrimSpace(ln); ln != "" {
-			lines = append(lines, ln)
-		}
-	}
-	if len(lines) > 4 {
-		lines = lines[len(lines)-4:]
-	}
-	return strings.Join(lines, "\n")
-}
-
-// removeAccountViaCLI answers the prompts of the interactive menu
-// (menu "-" -> account number -> "y") inside a hidden pseudo terminal.
-func removeAccountViaCLI(number int) (string, error) {
-	exe, err := resolveTgDlpPath()
-	if err != nil {
-		return "", err
-	}
-	pty, err := startPTY(exe, []string{"accounts"})
-	if err != nil {
-		return "", err
-	}
-
-	var (
-		mu  sync.Mutex
-		buf strings.Builder
-	)
-	readDone := make(chan struct{})
-	go func() {
-		defer close(readDone)
-		tmp := make([]byte, 4096)
-		for {
-			n, err := pty.Read(tmp)
-			if n > 0 {
-				mu.Lock()
-				buf.Write(tmp[:n])
-				mu.Unlock()
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	snapshot := func() string {
-		mu.Lock()
-		defer mu.Unlock()
-		return stripANSI(buf.String())
-	}
-	waitFor := func(s string, d time.Duration) bool {
-		deadline := time.Now().Add(d)
-		for time.Now().Before(deadline) {
-			if strings.Contains(snapshot(), s) {
-				return true
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-		return false
-	}
-	send := func(s string) { _, _ = pty.Write([]byte(s + "\r")) }
-	abort := func(msg string) (string, error) {
-		pty.Kill()
-		_ = pty.Close()
-		return cleanCLIText(snapshot()), errors.New(msg)
-	}
-
-	if !waitFor("Select an account number", 15*time.Second) {
-		return abort("tg-dlp did not show the account menu")
-	}
-	send("-")
-	if !waitFor("Remove which account number", 10*time.Second) {
-		return abort("tg-dlp did not ask which account to remove")
-	}
-	send(strconv.Itoa(number))
-	if !waitFor("Continue?", 10*time.Second) {
-		return abort("tg-dlp did not ask for confirmation")
-	}
-	send("y")
-
-	done := make(chan struct{})
-	go func() {
-		_, _ = pty.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(20 * time.Second):
-		pty.Kill()
-	}
-	_ = pty.Close()
-	select {
-	case <-readDone:
-	case <-time.After(2 * time.Second):
-	}
-	return cleanCLIText(snapshot()), nil
-}
-
-func profileExists(items []accountItem, name string) bool {
-	for _, it := range items {
-		if it.Profile == name {
-			return true
-		}
-	}
-	return false
-}
-
 // showAccountsDialog is the GUI version of the "tg-dlp accounts" menu.
-//   proxyArgs: extra global flags (e.g. --proxy) used for the QR login
-//   onChanged: called after the active account / account list changed
+//
+//	proxyArgs: extra global flags (e.g. --proxy) used for the QR login
+//	onChanged: called after the active account / account list changed
 func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func()) {
 	var (
-		items    []accountItem
+		items    []tgdlp.Account
 		selected = -1
 		busy     = true
 		list     *widget.List
@@ -229,9 +39,9 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 	removeBtn.Importance = widget.DangerImportance
 	refreshBtn := widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), nil)
 
-	current := func() (accountItem, bool) {
+	current := func() (tgdlp.Account, bool) {
 		if selected < 0 || selected >= len(items) {
-			return accountItem{}, false
+			return tgdlp.Account{}, false
 		}
 		return items[selected], true
 	}
@@ -262,7 +72,7 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 		}
 		updateButtons()
 		go func() {
-			got, err := listAccounts()
+			got, err := tgdlp.ListAccounts()
 			fyne.Do(func() {
 				busy = false
 				if err != nil {
@@ -300,7 +110,7 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 		go func() {
 			out, err := job()
 			fyne.Do(func() {
-				msg := cleanCLIText(out)
+				msg := tgdlp.CleanCLIText(out)
 				if err != nil {
 					if msg != "" {
 						msg = err.Error() + "\n" + msg
@@ -356,7 +166,7 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 			return
 		}
 		run("Switching...", it.Profile, true, func() (string, error) {
-			return runTgDlpHidden(20*time.Second, "switch", it.Profile)
+			return tgdlp.RunHidden(20*time.Second, "switch", it.Profile)
 		})
 	}
 
@@ -381,12 +191,12 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 					return
 				}
 				newName := strings.ToLower(strings.TrimSpace(entry.Text))
-				if !profileNameRe.MatchString(newName) {
+				if !tgdlp.ProfileNameRe.MatchString(newName) {
 					dialog.ShowError(errors.New("Use letters, digits, '-' and '_' (max 32 characters)."), w)
 					return
 				}
 				run("Renaming...", newName, true, func() (string, error) {
-					return runTgDlpHidden(20*time.Second, "rename", it.Profile, newName)
+					return tgdlp.RunHidden(20*time.Second, "rename", it.Profile, newName)
 				})
 			}, w)
 		d.Show()
@@ -407,7 +217,7 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 				}
 				run("Removing...", "", true, func() (string, error) {
 					// the number can change, so look it up again right before removing
-					fresh, err := listAccounts()
+					fresh, err := tgdlp.ListAccounts()
 					if err != nil {
 						return "", err
 					}
@@ -420,12 +230,12 @@ func showAccountsDialog(w fyne.Window, proxyArgs func() []string, onChanged func
 					if num == 0 {
 						return "", errors.New("this account is no longer in the list")
 					}
-					out, err := removeAccountViaCLI(num)
+					out, err := tgdlp.RemoveAccount(num)
 					if err != nil {
 						return out, err
 					}
-					after, lerr := listAccounts()
-					if lerr == nil && profileExists(after, it.Profile) {
+					after, lerr := tgdlp.ListAccounts()
+					if lerr == nil && tgdlp.ProfileExists(after, it.Profile) {
 						return out, errors.New("the account is still in the list")
 					}
 					return "Removed " + it.Label + " [profile: " + it.Profile + "]", nil

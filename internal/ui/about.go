@@ -1,4 +1,6 @@
-package main
+// Package ui is the Fyne based user interface of tg-dlp GUI.
+
+package ui
 
 import (
 	"fmt"
@@ -12,15 +14,14 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-)
 
-// ============================================================
-// App constants
-// ============================================================
+	"tg-dlp_GUI/assets"
+	"tg-dlp_GUI/internal/persist"
+)
 
 const (
 	AppName        = "tg-dlp GUI"
-	AppVersion     = "1.0.1.2"
+	AppVersion     = "1.0.1.3"
 	AppReleaseDate = "30.Nov.2026"
 	AppDeveloper   = "YawHackka (YawStar)"
 	AppRepoURL     = "https://github.com/YawStar/tg-dlp-gui"
@@ -52,8 +53,8 @@ func showAboutDialog(a fyne.App, w fyne.Window) {
 
 	var items []fyne.CanvasObject
 
-	if len(appIconBytes) > 0 {
-		img := canvas.NewImageFromResource(fyne.NewStaticResource("about-icon.png", appIconBytes))
+	if len(assets.AppIcon) > 0 {
+		img := canvas.NewImageFromResource(fyne.NewStaticResource("about-icon.png", assets.AppIcon))
 		img.FillMode = canvas.ImageFillContain
 		img.SetMinSize(fyne.NewSize(72, 72))
 		items = append(items, container.NewCenter(img))
@@ -86,7 +87,7 @@ func showAboutDialog(a fyne.App, w fyne.Window) {
 		w.Clipboard().SetContent(aboutText())
 	})
 	folderBtn := widget.NewButtonWithIcon("Data folder", theme.FolderOpenIcon(), func() {
-		if err := openLocalPath(a, appDataDir()); err != nil {
+		if err := openLocalPath(a, persist.AppDataDir()); err != nil {
 			dialog.ShowError(err, w)
 		}
 	})

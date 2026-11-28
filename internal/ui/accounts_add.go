@@ -1,4 +1,4 @@
-package main
+package ui
 
 import (
 	"context"
@@ -8,9 +8,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
-
-	qrcode "github.com/skip2/go-qrcode"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -18,8 +15,11 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-
+	qrcode "github.com/skip2/go-qrcode"
 	tdaccounts "tg-dlp/core/accounts"
+
+	"tg-dlp_GUI/internal/tgauth"
+	"tg-dlp_GUI/internal/tgdlp"
 )
 
 // ============================================================
@@ -34,77 +34,18 @@ import (
 //      is asked inside the dialog when the account needs it
 // ============================================================
 
-const minSessionPassword = 4
-
-type cacheChoice struct {
-	Label   string
-	Seconds int // 0 = until the session file is deleted, qrCacheNever = do not remember
-}
-
-// "Remember the session password for ..." (same options as "tg-dlp config-cache").
-var cacheChoices = []cacheChoice{
-	{"30 minutes (default)", 1800},
-	{"1 hour", 3600},
-	{"2 hours", 7200},
-	{"3 hours", 10800},
-	{"Once (do not remember)", qrCacheNever},
-	{"Until session expires (forever)", 0},
-}
-
-// proxyFromArgs turns the global proxy flags the dialog receives
-// ("--proxy <url>" / "--no-proxy") into the values the login needs.
-func proxyFromArgs(args []string) (proxy string, noProxy bool) {
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--proxy":
-			if i+1 < len(args) {
-				proxy = args[i+1]
-				i++
-			}
-		case "--no-proxy":
-			noProxy = true
-		}
-	}
-	return proxy, noProxy
-}
-
-func validateProfileName(name string, existing []accountItem) error {
-	switch {
-	case name == "":
-		return errors.New("Please enter a profile name.")
-	case strings.ContainsAny(name, " \t"):
-		return errors.New("The profile name can't contain spaces.")
-	case utf8.RuneCountInString(name) > 32:
-		return errors.New("The profile name can be at most 32 characters.")
-	case name == "default":
-		return errors.New("'default' is reserved. Please choose another name.")
-	case !profileNameRe.MatchString(name):
-		return errors.New("The profile name can't contain special characters like < > ? | \\ * / : \". Use only letters, digits, '-' and '_'.")
-	case profileExists(existing, name):
-		return fmt.Errorf("An account named %q already exists.", name)
-	}
-	return nil
-}
-
-func validateSessionPassword(pw string) error {
-	if utf8.RuneCountInString(pw) < minSessionPassword {
-		return fmt.Errorf("The session password needs at least %d characters.", minSessionPassword)
-	}
-	return nil
-}
-
 // showAddAccountDialog asks for the details, then runs the whole flow.
 // onDone(profile, added, message) is always called on the UI thread when the flow ends.
-func showAddAccountDialog(w fyne.Window, existing []accountItem, proxyArgs func() []string, onDone func(profile string, added bool, msg string)) {
+func showAddAccountDialog(w fyne.Window, existing []tgdlp.Account, proxyArgs func() []string, onDone func(profile string, added bool, msg string)) {
 	nameEntry := widget.NewEntry()
 	nameEntry.SetPlaceHolder("e.g. work")
 	nameEntry.Validator = func(s string) error {
-		return validateProfileName(strings.ToLower(strings.TrimSpace(s)), existing)
+		return tgdlp.ValidateProfileName(strings.ToLower(strings.TrimSpace(s)), existing)
 	}
 
 	pwEntry := widget.NewPasswordEntry()
 	pwEntry.SetPlaceHolder("Min 4 characters")
-	pwEntry.Validator = validateSessionPassword
+	pwEntry.Validator = tgauth.ValidateSessionPassword
 
 	pw2Entry := widget.NewPasswordEntry()
 	pw2Entry.SetPlaceHolder("Repeat the password")
@@ -116,7 +57,7 @@ func showAddAccountDialog(w fyne.Window, existing []accountItem, proxyArgs func(
 	}
 
 	var labels []string
-	for _, c := range cacheChoices {
+	for _, c := range tgauth.CacheChoices {
 		labels = append(labels, c.Label)
 	}
 	cacheSel := widget.NewSelect(labels, nil)
@@ -134,8 +75,8 @@ func showAddAccountDialog(w fyne.Window, existing []accountItem, proxyArgs func(
 
 	allValid := func() bool {
 		name := strings.ToLower(strings.TrimSpace(nameEntry.Text))
-		return validateProfileName(name, existing) == nil &&
-			validateSessionPassword(pwEntry.Text) == nil &&
+		return tgdlp.ValidateProfileName(name, existing) == nil &&
+			tgauth.ValidateSessionPassword(pwEntry.Text) == nil &&
 			pwEntry.Text == pw2Entry.Text
 	}
 	refresh := func() {
@@ -164,7 +105,7 @@ func showAddAccountDialog(w fyne.Window, existing []accountItem, proxyArgs func(
 			idx = 0
 		}
 		pw := pwEntry.Text
-		choice := cacheChoices[idx]
+		choice := tgauth.CacheChoices[idx]
 		d.Hide()
 		showAddProgressDialog(w, name, pw, choice, proxyArgs(), onDone)
 	}
@@ -186,7 +127,7 @@ func showAddAccountDialog(w fyne.Window, existing []accountItem, proxyArgs func(
 }
 
 // showAddProgressDialog runs the QR login (qrlogin.go) and shows the QR code.
-func showAddProgressDialog(w fyne.Window, name, pw string, choice cacheChoice, proxy []string, onDone func(profile string, added bool, msg string)) {
+func showAddProgressDialog(w fyne.Window, name, pw string, choice tgauth.CacheChoice, proxy []string, onDone func(profile string, added bool, msg string)) {
 	titles := []string{
 		"Prepare the session",
 		"Scan the QR code with your phone",
@@ -284,7 +225,7 @@ func showAddProgressDialog(w fyne.Window, name, pw string, choice cacheChoice, p
 	d.Resize(fyne.NewSize(580, 620))
 	d.Show()
 
-	hooks := qrLoginHooks{
+	hooks := tgauth.LoginHooks{
 		ShowQR: func(u string) {
 			q, err := qrcode.New(u, qrcode.Medium)
 			if err != nil {
@@ -301,14 +242,14 @@ func showAddProgressDialog(w fyne.Window, name, pw string, choice cacheChoice, p
 				linkRow.Show()
 			})
 		},
-		Stage: func(s qrStage) {
+		Stage: func(s tgauth.LoginStage) {
 			switch s {
-			case stageScan:
+			case tgauth.StageScan:
 				if curStep.Swap(1) < 1 {
 					setStep(0, "[ OK ]")
 					setStep(1, "[...]")
 				}
-			case stageSaving:
+			case tgauth.StageSaving:
 				if curStep.Swap(2) < 2 {
 					setStep(1, "[ OK ]")
 					setStep(2, "[...]")
@@ -359,15 +300,15 @@ func showAddProgressDialog(w fyne.Window, name, pw string, choice cacheChoice, p
 			})
 		}
 
-		cfgDir, err := tgDlpConfigDir()
+		cfgDir, err := tgdlp.ConfigDir()
 		if err != nil {
 			setStep(0, "[FAIL]")
 			end(false, "Could not add the account: "+err.Error(), true)
 			return
 		}
-		proxyURL, noProxy := proxyFromArgs(proxy)
+		proxyURL, noProxy := tgdlp.ProxyFromArgs(proxy)
 
-		err = runQRLogin(ctx, qrLoginParams{
+		err = tgauth.RunQRLogin(ctx, tgauth.LoginParams{
 			ConfigDir:    cfgDir,
 			Profile:      name,
 			Password:     pw,
@@ -384,12 +325,12 @@ func showAddProgressDialog(w fyne.Window, name, pw string, choice cacheChoice, p
 			end(false, "The QR login timed out (5 minutes). Please try again.", true)
 		case err != nil:
 			setStep(int(curStep.Load()), "[FAIL]")
-			end(false, "Could not add the account: "+hidePW(cleanCLIText(friendlyLoginError(err))), true)
+			end(false, "Could not add the account: "+hidePW(tgdlp.CleanCLIText(tgauth.FriendlyLoginError(err))), true)
 		default:
 			setStep(2, "[ OK ]")
 			msg := "Account added: [profile: " + name + "]"
 			if a, ok := tdaccounts.Get(cfgDir, name); ok {
-				msg = fmt.Sprintf("Switched to %s [profile: %s]", cleanCLIText(a.Label()), name)
+				msg = fmt.Sprintf("Switched to %s [profile: %s]", tgdlp.CleanCLIText(a.Label()), name)
 			}
 			end(true, msg, false)
 		}

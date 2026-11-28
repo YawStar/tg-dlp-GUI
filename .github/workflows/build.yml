@@ -165,7 +165,7 @@ jobs:
           rsrc \
             -ico assets/app-icon.ico \
             -arch ${{ matrix.goarch }} \
-            -o rsrc_windows_${{ matrix.goarch }}.syso
+            -o cmd/tg-dlp-gui/rsrc_windows_${{ matrix.goarch }}.syso
 
       # Build Linux
       - name: Build Linux binary
@@ -185,7 +185,7 @@ jobs:
             -trimpath \
             -ldflags="-s -w" \
             -o "dist/${{ matrix.artifact_name }}/${{ matrix.bin_name }}" \
-            .
+            ./cmd/tg-dlp-gui
 
           cp assets/app-icon.png \
             "dist/${{ matrix.artifact_name }}/app-icon.png"
@@ -215,7 +215,7 @@ jobs:
             -trimpath \
             -ldflags="-H=windowsgui -s -w" \
             -o "dist/${{ matrix.artifact_name }}/${{ matrix.bin_name }}" \
-            .
+            ./cmd/tg-dlp-gui
 
       # Build macOS
       - name: Build macOS App
@@ -235,7 +235,7 @@ jobs:
             -trimpath \
             -ldflags="-s -w" \
             -o "$APP/Contents/MacOS/tg-dlp-gui" \
-            .
+            ./cmd/tg-dlp-gui
 
           ICONSET="dist/${{ matrix.artifact_name }}/AppIcon.iconset"
 
