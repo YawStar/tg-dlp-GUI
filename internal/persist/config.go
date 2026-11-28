@@ -31,6 +31,8 @@ type AppConfig struct {
 	Profiles map[string]FormProfile `json:"profiles"`
 	WinW     float32                `json:"win_w,omitempty"`
 	WinH     float32                `json:"win_h,omitempty"`
+	// AfterTask is what to do when a task succeeds ("Do nothing", "Shutdown", ...).
+	AfterTask string `json:"after_task,omitempty"`
 }
 
 func configPath() string { return filepath.Join(AppDataDir(), "config.json") }

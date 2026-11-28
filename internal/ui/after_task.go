@@ -2,12 +2,17 @@ package ui
 
 import (
 	"fmt"
+	"image"
+	"image/color"
+	"math"
 	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"tg-dlp_GUI/internal/platform"
@@ -22,15 +27,24 @@ const (
 	afterReboot   = "Reboot"
 )
 
-// powerCountdownSeconds is how long the Shutdown / Reboot dialog waits.
-const powerCountdownSeconds = 30
+// How long the countdown dialog waits before the action runs by itself.
+// Shutdown and Reboot can lose unsaved work, so they get more time than Sleep.
+const (
+	powerCountdownSeconds = 30
+	sleepCountdownSeconds = 10
+)
 
-// newAfterTaskSelect builds the "after the task" drop-down. It always starts
-// on "Do nothing" and is deliberately not saved, so a forgotten Shutdown
-// choice can never fire in a later session.
-func newAfterTaskSelect() *widget.Select {
-	s := widget.NewSelect([]string{afterNothing, afterExit, afterShutdown, afterSleep, afterReboot}, nil)
+// newAfterTaskSelect builds the "after the task" drop-down and selects the
+// saved choice (an unknown or empty value falls back to "Do nothing").
+func newAfterTaskSelect(saved string) *widget.Select {
+	options := []string{afterNothing, afterExit, afterShutdown, afterSleep, afterReboot}
+	s := widget.NewSelect(options, nil)
 	s.SetSelected(afterNothing)
+	for _, o := range options {
+		if o == saved {
+			s.SetSelected(saved)
+		}
+	}
 	return s
 }
 
@@ -40,39 +54,62 @@ func runAfterTask(a fyne.App, w fyne.Window, choice string, quit func()) {
 	switch choice {
 	case afterExit:
 		quit()
-	case afterSleep:
-		if err := platform.Power(platform.PowerSleep); err != nil {
-			dialog.ShowError(err, w)
-		}
 	case afterShutdown:
-		showPowerCountdown(a, w, "Shutdown", "Shutting down", platform.PowerShutdown)
+		showPowerCountdown(a, w, powerPlan{"Shutdown", "Shutting down", "Shutdown Now", powerCountdownSeconds, platform.PowerShutdown})
 	case afterReboot:
-		showPowerCountdown(a, w, "Reboot", "Rebooting", platform.PowerReboot)
+		showPowerCountdown(a, w, powerPlan{"Reboot", "Rebooting", "Reboot Now", powerCountdownSeconds, platform.PowerReboot})
+	case afterSleep:
+		showPowerCountdown(a, w, powerPlan{"Sleep", "Going to sleep", "Sleep Now", sleepCountdownSeconds, platform.PowerSleep})
 	}
 }
 
-// showPowerCountdown shows a live countdown. "Abort" cancels the action,
-// "Right now" runs it immediately, and when the time is up it runs by itself.
-func showPowerCountdown(a fyne.App, w fyne.Window, title, ing string, action platform.PowerAction) {
+// powerPlan describes one countdown dialog.
+type powerPlan struct {
+	title   string // dialog title
+	ing     string // "Shutting down" -> "Shutting down in 30 seconds..."
+	nowText string // text of the button that skips the countdown
+	seconds int
+	action  platform.PowerAction
+}
+
+// showPowerCountdown shows a live circular countdown. "Abort" cancels the
+// action, the "... Now" button runs it immediately, and when the time is up
+// it runs by itself.
+func showPowerCountdown(a fyne.App, w fyne.Window, p powerPlan) {
+	var left atomic.Int32 // seconds remaining, read by the ring painter
+	left.Store(int32(p.seconds))
+
 	msg := widget.NewLabel("")
 	msg.Alignment = fyne.TextAlignCenter
-	setRemaining := func(sec int) {
-		msg.SetText(fmt.Sprintf("%s in %d seconds...", ing, sec))
-	}
-	setRemaining(powerCountdownSeconds)
 
-	bar := widget.NewProgressBar()
-	bar.Max = powerCountdownSeconds
-	bar.SetValue(powerCountdownSeconds)
-	bar.TextFormatter = func() string { return fmt.Sprintf("%.0fs", bar.Value) }
+	number := canvas.NewText("", theme.Color(theme.ColorNameForeground))
+	number.TextSize = 40
+	number.TextStyle = fyne.TextStyle{Bold: true}
+	number.Alignment = fyne.TextAlignCenter
+
+	ring := canvas.NewRaster(func(pw, ph int) image.Image {
+		track := theme.Color(theme.ColorNameDisabled)
+		fill := theme.Color(theme.ColorNamePrimary)
+		return ringImage(pw, ph, float64(left.Load())/float64(p.seconds), track, fill)
+	})
+	ring.SetMinSize(fyne.NewSize(150, 150))
+
+	show := func(sec int) {
+		left.Store(int32(sec))
+		msg.SetText(fmt.Sprintf("%s in %d seconds...", p.ing, sec))
+		number.Text = fmt.Sprintf("%d", sec)
+		number.Refresh()
+		ring.Refresh()
+	}
+	show(p.seconds)
 
 	var (
 		d       dialog.Dialog
-		decided atomic.Bool // the first of Abort / Right now / timeout wins
+		decided atomic.Bool // the first of Abort / Now / timeout wins
 		stop    = make(chan struct{})
 	)
 	execute := func() {
-		if err := platform.Power(action); err != nil {
+		if err := platform.Power(p.action); err != nil {
 			dialog.ShowError(err, w)
 		}
 	}
@@ -83,7 +120,7 @@ func showPowerCountdown(a fyne.App, w fyne.Window, title, ing string, action pla
 			d.Hide()
 		}
 	})
-	nowBtn := widget.NewButton("Right now", func() {
+	nowBtn := widget.NewButton(p.nowText, func() {
 		if decided.CompareAndSwap(false, true) {
 			close(stop)
 			d.Hide()
@@ -92,21 +129,21 @@ func showPowerCountdown(a fyne.App, w fyne.Window, title, ing string, action pla
 	})
 	nowBtn.Importance = widget.HighImportance
 
-	d = dialog.NewCustomWithoutButtons(title, container.NewVBox(
+	d = dialog.NewCustomWithoutButtons(p.title, container.NewVBox(
 		msg,
-		bar,
+		container.NewCenter(container.NewStack(ring, container.NewCenter(number))),
 		container.NewGridWithColumns(2, abortBtn, nowBtn),
 	), w)
-	d.Resize(fyne.NewSize(420, 170))
+	d.Resize(fyne.NewSize(420, 330))
 	d.Show()
 	w.RequestFocus()
 	// the window may be minimized, so also tell the user from outside
-	a.SendNotification(fyne.NewNotification("tg-dlp GUI", fmt.Sprintf("%s in %d seconds.", ing, powerCountdownSeconds)))
+	a.SendNotification(fyne.NewNotification("tg-dlp GUI", fmt.Sprintf("%s in %d seconds.", p.ing, p.seconds)))
 
 	go func() {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
-		for remaining := powerCountdownSeconds; ; {
+		for remaining := p.seconds; ; {
 			select {
 			case <-stop:
 				return
@@ -122,11 +159,44 @@ func showPowerCountdown(a fyne.App, w fyne.Window, title, ing string, action pla
 					return
 				}
 				r := remaining
-				fyne.Do(func() {
-					setRemaining(r)
-					bar.SetValue(float64(r))
-				})
+				fyne.Do(func() { show(r) })
 			}
 		}
 	}()
+}
+
+// ringImage draws a ring that is filled clockwise from the top for the given
+// fraction (0..1) and shows the rest in the track colour.
+func ringImage(w, h int, frac float64, track, fill color.Color) image.Image {
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	cx, cy := float64(w)/2, float64(h)/2
+	outer := math.Min(cx, cy) - 1
+	inner := outer * 0.84
+	tr := color.NRGBAModel.Convert(track).(color.NRGBA)
+	fl := color.NRGBAModel.Convert(fill).(color.NRGBA)
+	limit := frac * 2 * math.Pi
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dx, dy := float64(x)+0.5-cx, float64(y)+0.5-cy
+			d := math.Hypot(dx, dy)
+			cov := math.Min(d-inner+0.5, outer-d+0.5) // 1px soft edge
+			if cov <= 0 {
+				continue
+			}
+			if cov > 1 {
+				cov = 1
+			}
+			ang := math.Atan2(dx, -dy) // 0 at the top, clockwise
+			if ang < 0 {
+				ang += 2 * math.Pi
+			}
+			c := tr
+			if ang <= limit {
+				c = fl
+			}
+			c.A = uint8(float64(c.A) * cov)
+			img.SetNRGBA(x, y, c)
+		}
+	}
+	return img
 }

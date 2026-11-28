@@ -20,7 +20,7 @@ import (
 
 const (
 	AppName        = "tg-dlp GUI"
-	AppVersion     = "1.0.1.4"
+	AppVersion     = "1.0.1.3"
 	AppReleaseDate = "30.Nov.2026"
 	AppDeveloper   = "YawHackka (YawStar)"
 	AppRepoURL     = "https://github.com/YawStar/tg-dlp-gui"

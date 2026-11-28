@@ -355,8 +355,8 @@ func Run() {
 	clearLogBtn := widget.NewButton("Clear Log", clearLog)
 	clearLogBtn.Importance = widget.LowImportance
 
-	// What to do when a task succeeds (never saved, always starts on "Do nothing").
-	afterSelect := newAfterTaskSelect()
+	// What to do when a task succeeds (saved in the config).
+	afterSelect := newAfterTaskSelect(cfg.AfterTask)
 	var quitApp func() // assigned with the window close handler below
 
 	resetStats := func() {
@@ -983,7 +983,8 @@ func Run() {
 				"skipFlood": skipFloodCheck.Checked,
 				"debug":     debugCheck.Checked,
 			},
-			Profiles: profiles,
+			Profiles:  profiles,
+			AfterTask: afterSelect.Selected,
 		}
 		if !isDarkTheme {
 			c.Theme = "light"
@@ -1860,8 +1861,8 @@ func Run() {
 			layout.NewSpacer(),
 			container.NewHBox(
 				layout.NewSpacer(),
-				afterSelect,
-				actionView,
+				container.NewVBox(widget.NewLabel("After task actions:"), afterSelect),
+				container.NewVBox(layout.NewSpacer(), actionView),
 			),
 			layout.NewSpacer(),
 		),
